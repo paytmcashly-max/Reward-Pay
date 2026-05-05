@@ -13,8 +13,20 @@ const otpStore = createOtpStore({
   nodeEnv: config.NODE_ENV,
 });
 
-const store = config.DATABASE_URL
-  ? new PostgresStore(new Pool({ connectionString: config.DATABASE_URL }))
+const databaseUrl = config.DATABASE_URL;
+const shouldUseManagedPostgresSsl =
+  Boolean(databaseUrl) &&
+  (config.NODE_ENV === "production" ||
+    databaseUrl?.includes("supabase.co") ||
+    databaseUrl?.includes("render.com"));
+
+const store = databaseUrl
+  ? new PostgresStore(
+      new Pool({
+        connectionString: databaseUrl,
+        ssl: shouldUseManagedPostgresSsl ? { rejectUnauthorized: false } : undefined,
+      }),
+    )
   : config.STATE_FILE_PATH
     ? new FileStore(config.STATE_FILE_PATH)
   : new InMemoryStore();
