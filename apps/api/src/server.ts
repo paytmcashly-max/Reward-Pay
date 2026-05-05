@@ -6,8 +6,10 @@ import { PlatformEngine } from "./platform.js";
 import { FileStore, InMemoryStore, PostgresStore } from "./store.js";
 
 const config = readConfig();
+const redisUrlForOtp =
+  config.ENABLE_INVITE_LOGIN && config.OTP_STATE_FILE_PATH ? undefined : config.REDIS_URL;
 const otpStore = createOtpStore({
-  redisUrl: config.REDIS_URL,
+  redisUrl: redisUrlForOtp,
   otpFilePath: config.OTP_STATE_FILE_PATH,
   allowMemory: config.ALLOW_MEMORY_INFRASTRUCTURE,
   nodeEnv: config.NODE_ENV,
