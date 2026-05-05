@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: starter
     rootDir: .
-    buildCommand: npm install
+    buildCommand: npm install --include=dev
     startCommand: npm run start --workspace @reward-wallet/api
     healthCheckPath: /health
     envVars:
