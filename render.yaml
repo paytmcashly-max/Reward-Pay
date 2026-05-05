@@ -1,0 +1,72 @@
+databases:
+  - name: reward-wallet-db
+    plan: starter
+    databaseName: reward_wallet
+    user: reward_wallet
+
+services:
+  - type: redis
+    name: reward-wallet-redis
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+
+  - type: web
+    name: reward-wallet-api
+    runtime: node
+    plan: starter
+    rootDir: .
+    buildCommand: npm install
+    startCommand: npm run start --workspace @reward-wallet/api
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: reward-wallet-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: reward-wallet-redis
+          property: connectionString
+      - key: ALLOW_DEV_HEADERS
+        value: "false"
+      - key: ALLOW_MEMORY_INFRASTRUCTURE
+        value: "false"
+      - key: EXPLICIT_MOCK_PAYMENTS
+        value: "false"
+      - key: EXPLICIT_MOCK_PAYOUTS
+        value: "true"
+      - key: JWT_TTL_SECONDS
+        value: "604800"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CASHFREE_BASE_URL
+        value: https://api.cashfree.com
+      - key: CASHFREE_PAYMENT_API_VERSION
+        value: 2025-01-01
+      - key: CASHFREE_PAYOUT_API_VERSION
+        value: 2024-01-01
+      - key: CASHFREE_CLIENT_ID
+        sync: false
+      - key: CASHFREE_CLIENT_SECRET
+        sync: false
+      - key: CASHFREE_WEBHOOK_SECRET
+        sync: false
+      - key: MSG91_BASE_URL
+        value: https://control.msg91.com
+      - key: MSG91_AUTH_KEY
+        sync: false
+      - key: MSG91_TEMPLATE_ID
+        sync: false
+      - key: ADMIN_SUPER_PHONE
+        sync: false
+      - key: ADMIN_SUPER_PASSWORD
+        sync: false
+      - key: ADMIN_OPERATOR_PHONE
+        sync: false
+      - key: ADMIN_OPERATOR_PASSWORD
+        sync: false
