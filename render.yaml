@@ -16,6 +16,8 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+      - key: OTP_STATE_FILE_PATH
+        value: /tmp/reward-wallet-otp-state.json
       - key: ALLOW_DEV_HEADERS
         value: "false"
       - key: ALLOW_MEMORY_INFRASTRUCTURE

@@ -97,8 +97,8 @@ export const readConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     if (!config.DATABASE_URL) {
       issues.push("DATABASE_URL is required in production");
     }
-    if (!config.REDIS_URL) {
-      issues.push("REDIS_URL is required in production");
+    if (!config.REDIS_URL && !config.OTP_STATE_FILE_PATH) {
+      issues.push("REDIS_URL or OTP_STATE_FILE_PATH is required in production");
     }
     if (config.JWT_SECRET === DEFAULT_JWT_SECRET || config.JWT_SECRET.includes("dev-secret")) {
       issues.push("JWT_SECRET must be replaced with a strong production secret");

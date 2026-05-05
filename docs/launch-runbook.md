@@ -6,9 +6,10 @@
 - Confirm external infrastructure is ready:
   - `DATABASE_URL` from Supabase Postgres
   - `REDIS_URL` from Render Key Value or another hosted Redis-compatible provider
+  - or `OTP_STATE_FILE_PATH` for invite-only closed beta
 - Set live values for:
   - `DATABASE_URL`
-  - `REDIS_URL`
+  - `REDIS_URL` or `OTP_STATE_FILE_PATH`
   - `ENABLE_INVITE_LOGIN=true`
   - `INVITE_CODE`
   - `CASHFREE_CLIENT_ID`
@@ -27,7 +28,7 @@
 - Open `/health` and confirm `ok: true`.
 - Open `/health/providers` and confirm:
   - `storageMode=postgres`
-  - `otpMode=redis`
+  - `otpMode=redis` or `otpMode=file`
   - `memoryInfrastructure=false`
   - `cashfree.paymentsLive=true`
   - `authMode=invite`

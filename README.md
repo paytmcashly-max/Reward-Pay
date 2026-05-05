@@ -54,6 +54,7 @@ OTP in development:
   - `EXPLICIT_MOCK_PAYOUTS=true`
 - Production OTP is expected to use `MSG91`.
 - Closed beta can run with invite-code login instead of SMS OTP.
+- Closed beta may also use `OTP_STATE_FILE_PATH` for file-backed rate limiting when Redis is intentionally skipped.
 - Admin seeded credentials should never be used in production.
 - Render blueprint:
   - [render.yaml](./render.yaml)
@@ -82,6 +83,7 @@ If `DATABASE_URL` is present, the API boots with `PostgresStore` automatically a
    - Supabase Postgres works directly with the current API runtime
 2. Set `REDIS_URL` in `apps/api/.env`
    - Use Render Key Value or another hosted Redis-compatible service
+   - For invite-only closed beta, you can skip Redis and set `OTP_STATE_FILE_PATH` instead
 3. For non-admin local development, keep:
    - `STATE_FILE_PATH=./.data/platform-state.json`
    - `OTP_STATE_FILE_PATH=./.data/otp-state.json`
@@ -115,13 +117,14 @@ npm run db:seed --workspace @reward-wallet/api
 npm run dev:api
 ```
 
-Use `GET /health/providers` to confirm whether Cashfree, Postgres, and Redis are live.
+Use `GET /health/providers` to confirm whether Cashfree, Postgres, and your chosen OTP/rate-limit store are live.
 
 ## Render + Supabase Production Shape
 
 - Host the API on Render using [render.yaml](./render.yaml)
 - Use Supabase for `DATABASE_URL`
 - Use Render Key Value or another hosted Redis-compatible provider for `REDIS_URL`
+- Or, for invite-only closed beta, use `OTP_STATE_FILE_PATH` and skip Redis until wider rollout
 - Fill the remaining production secrets in Render before the first deploy
 
 ## Production APK Build
