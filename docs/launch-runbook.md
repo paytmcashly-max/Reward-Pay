@@ -9,15 +9,16 @@
 - Set live values for:
   - `DATABASE_URL`
   - `REDIS_URL`
+  - `ENABLE_INVITE_LOGIN=true`
+  - `INVITE_CODE`
   - `CASHFREE_CLIENT_ID`
   - `CASHFREE_CLIENT_SECRET`
   - `CASHFREE_WEBHOOK_SECRET`
-  - `MSG91_AUTH_KEY`
-  - `MSG91_TEMPLATE_ID`
   - `ADMIN_SUPER_PHONE`
   - `ADMIN_SUPER_PASSWORD`
   - `ADMIN_OPERATOR_PHONE`
   - `ADMIN_OPERATOR_PASSWORD`
+- For the current pre-production rollout, keep `CASHFREE_BASE_URL=https://sandbox.cashfree.com` until live credentials are ready.
 - Keep `EXPLICIT_MOCK_PAYOUTS=true` until live payout access is verified with Cashfree.
 - Run `npm run doctor:api` against the production env locally before deploy.
 
@@ -29,7 +30,7 @@
   - `otpMode=redis`
   - `memoryInfrastructure=false`
   - `cashfree.paymentsLive=true`
-  - `otpProvider=msg91`
+  - `authMode=invite`
 - Verify Postgres migration and seed completed without error.
 - If using Supabase, verify the connection string includes SSL.
 
@@ -56,9 +57,9 @@
   - inspect provider events for the deposit
   - run a sync on the order
   - confirm Cashfree webhook signature is present and valid
-- OTP issue:
-  - verify MSG91 env values
-  - verify Redis connectivity
+- Login issue:
+  - verify `INVITE_CODE`
+  - verify the deployed service has `ENABLE_INVITE_LOGIN=true`
   - check rate-limit responses
 - Withdrawal issue:
   - confirm user has withdrawable balance

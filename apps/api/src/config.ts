@@ -30,6 +30,8 @@ const configSchema = z.object({
   MSG91_BASE_URL: z.string().default("https://control.msg91.com"),
   MSG91_AUTH_KEY: z.string().optional(),
   MSG91_TEMPLATE_ID: z.string().optional(),
+  ENABLE_INVITE_LOGIN: envBoolean.default(false),
+  INVITE_CODE: z.string().optional(),
   DATABASE_URL: z.string().optional(),
   REDIS_URL: z.string().optional(),
   STATE_FILE_PATH: z.string().optional(),
@@ -113,8 +115,11 @@ export const readConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     if (!config.CASHFREE_CLIENT_ID || !config.CASHFREE_CLIENT_SECRET) {
       issues.push("CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET are required in production");
     }
-    if (!config.MSG91_AUTH_KEY || !config.MSG91_TEMPLATE_ID) {
-      issues.push("MSG91_AUTH_KEY and MSG91_TEMPLATE_ID are required in production");
+    if (config.ENABLE_INVITE_LOGIN && !config.INVITE_CODE) {
+      issues.push("INVITE_CODE is required when ENABLE_INVITE_LOGIN is true");
+    }
+    if (!config.ENABLE_INVITE_LOGIN && (!config.MSG91_AUTH_KEY || !config.MSG91_TEMPLATE_ID)) {
+      issues.push("MSG91_AUTH_KEY and MSG91_TEMPLATE_ID are required in production unless invite login is enabled");
     }
 
     if (issues.length) {

@@ -66,9 +66,8 @@ type MobileStore = {
   marketPulse: typeof marketPulse;
   lastActionMessage: string;
   errorMessage: string | null;
-  pendingPhone: string;
-  debugOtpCode: string | null;
   hydrate: () => Promise<void>;
+  inviteLogin: (input: { phone: string; inviteCode: string; name?: string; referralCode?: string }) => Promise<void>;
   sendOtp: (phone: string) => Promise<void>;
   verifyOtp: (input: { phone: string; code: string; name?: string; referralCode?: string }) => Promise<void>;
   refreshData: () => Promise<void>;
@@ -160,10 +159,8 @@ export const useMobileStore = create<MobileStore>((set, get) => {
     marketPulse,
     lastActionMessage: isDemoMode
       ? "Demo mode active. Add EXPO_PUBLIC_API_BASE_URL to switch to the live API."
-      : "Sign in with OTP to load your live wallet.",
+      : "Use your phone number and invite code to sign in.",
     errorMessage: null,
-    pendingPhone: "",
-    debugOtpCode: null,
 
     hydrate: async () => {
       set({ isHydrating: true, errorMessage: null });
@@ -222,9 +219,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
       try {
         if (isDemoMode) {
           set({
-            pendingPhone: phone,
-            debugOtpCode: "123456",
-            lastActionMessage: "Demo OTP generated. Use 123456 to continue.",
+            lastActionMessage: `Demo OTP generated for ${phone}.`,
             isSubmitting: false,
           });
           return;
@@ -232,15 +227,50 @@ export const useMobileStore = create<MobileStore>((set, get) => {
 
         const result = await apiClient.sendOtp(phone);
         set({
-          pendingPhone: phone,
-          debugOtpCode: result.debugCode ?? null,
-          lastActionMessage: "OTP sent. Enter the code to continue.",
+          lastActionMessage: result.debugCode
+            ? `OTP sent. Debug code available: ${result.debugCode}`
+            : "OTP sent. Enter the code to continue.",
           isSubmitting: false,
         });
       } catch (error) {
         set({
           isSubmitting: false,
           errorMessage: error instanceof Error ? error.message : "Unable to send OTP",
+        });
+      }
+    },
+
+    inviteLogin: async (input) => {
+      set({ isSubmitting: true, errorMessage: null });
+      try {
+        if (isDemoMode) {
+          set({
+            isAuthenticated: true,
+            user: demoUser,
+            sessionToken: "demo-token",
+            isSubmitting: false,
+            lastActionMessage: "Demo invite login complete.",
+          });
+          return;
+        }
+
+        const session = await apiClient.inviteLogin(input);
+        await sessionStorage.setToken(session.accessToken);
+        set({
+          sessionToken: session.accessToken,
+          user: session.user,
+          wallet: session.walletSummary,
+        });
+        await refreshLiveData(session.accessToken);
+        set({
+          isSubmitting: false,
+          isAuthenticated: true,
+          lastActionMessage: "Signed in successfully.",
+        });
+      } catch (error) {
+        set({
+          isSubmitting: false,
+          errorMessage: error instanceof Error ? error.message : "Unable to sign in with invite code",
         });
       }
     },
@@ -253,7 +283,6 @@ export const useMobileStore = create<MobileStore>((set, get) => {
             isAuthenticated: true,
             user: demoUser,
             sessionToken: "demo-token",
-            pendingPhone: input.phone,
             isSubmitting: false,
             lastActionMessage: "Demo login complete.",
           });
@@ -271,8 +300,6 @@ export const useMobileStore = create<MobileStore>((set, get) => {
         set({
           isSubmitting: false,
           isAuthenticated: true,
-          pendingPhone: input.phone,
-          debugOtpCode: null,
           lastActionMessage: "Signed in successfully.",
         });
       } catch (error) {
@@ -619,8 +646,6 @@ export const useMobileStore = create<MobileStore>((set, get) => {
         deposits: [],
         beneficiaries: [demoBeneficiary],
         withdrawals: [],
-        pendingPhone: "",
-        debugOtpCode: null,
         lastActionMessage: isDemoMode
           ? "Demo mode active. Add EXPO_PUBLIC_API_BASE_URL to switch to live."
           : "Signed out.",

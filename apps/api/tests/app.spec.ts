@@ -106,4 +106,19 @@ describe("api flow", () => {
     expect(blocked.status).toBe(429);
     expect(blocked.body.code).toBe("rate_limited");
   });
+
+  it("supports invite login when enabled", async () => {
+    const app = createTestApp({
+      ENABLE_INVITE_LOGIN: "true",
+      INVITE_CODE: "BETA2026",
+    });
+
+    const response = await request(app)
+      .post("/auth/invite-login")
+      .send({ phone: "9000000055", inviteCode: "beta2026", name: "Invite User" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.user.phone).toBe("9000000055");
+    expect(response.body.user.id).toMatch(/^\d{7}$/);
+  });
 });

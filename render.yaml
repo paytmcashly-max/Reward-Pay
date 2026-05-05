@@ -24,12 +24,16 @@ services:
         value: "false"
       - key: EXPLICIT_MOCK_PAYOUTS
         value: "true"
+      - key: ENABLE_INVITE_LOGIN
+        value: "true"
+      - key: INVITE_CODE
+        sync: false
       - key: JWT_TTL_SECONDS
         value: "604800"
       - key: JWT_SECRET
         generateValue: true
       - key: CASHFREE_BASE_URL
-        value: https://api.cashfree.com
+        value: https://sandbox.cashfree.com
       - key: CASHFREE_PAYMENT_API_VERSION
         value: 2025-01-01
       - key: CASHFREE_PAYOUT_API_VERSION
@@ -39,12 +43,6 @@ services:
       - key: CASHFREE_CLIENT_SECRET
         sync: false
       - key: CASHFREE_WEBHOOK_SECRET
-        sync: false
-      - key: MSG91_BASE_URL
-        value: https://control.msg91.com
-      - key: MSG91_AUTH_KEY
-        sync: false
-      - key: MSG91_TEMPLATE_ID
         sync: false
       - key: ADMIN_SUPER_PHONE
         sync: false

@@ -61,12 +61,15 @@ export type ProviderStatus = {
   memoryInfrastructure: boolean;
   databaseConfigured: boolean;
   redisConfigured: boolean;
+  authMode?: "otp" | "invite";
 };
 
 export const apiClient = {
   sendOtp: (phone: string) => request<{ sessionId: string; debugCode?: string }>("/auth/send-otp", { method: "POST", body: { phone } }),
   verifyOtp: (input: { phone: string; code: string; name?: string; referralCode?: string }) =>
     request<AuthSession>("/auth/verify-otp", { method: "POST", body: input }),
+  inviteLogin: (input: { phone: string; inviteCode: string; name?: string; referralCode?: string }) =>
+    request<AuthSession>("/auth/invite-login", { method: "POST", body: input }),
   getMe: (token: string) => request<{ user: User; walletSummary: WalletSummary }>("/me", { token }),
   getWalletSummary: (token: string) => request<WalletSummary>("/wallet/summary", { token }),
   getWalletTransactions: (token: string) => request<WalletTransaction[]>("/wallet/transactions", { token }),

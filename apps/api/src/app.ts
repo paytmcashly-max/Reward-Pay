@@ -18,6 +18,13 @@ const verifyOtpSchema = z.object({
   referralCode: z.string().optional(),
 });
 
+const inviteLoginSchema = z.object({
+  phone: z.string().min(10),
+  inviteCode: z.string().min(4),
+  name: z.string().optional(),
+  referralCode: z.string().optional(),
+});
+
 const adminLoginSchema = z.object({
   phone: z.string().min(10),
   password: z.string().min(4),
@@ -384,6 +391,20 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
         limit: 10,
       });
       res.json(await engine.verifyOtp(body.phone, body.code, body.name, body.referralCode));
+    }),
+  );
+
+  app.post(
+    "/auth/invite-login",
+    asyncRoute(async (req, res) => {
+      const body = inviteLoginSchema.parse(req.body);
+      await enforceRateLimit({
+        scope: "invite_login",
+        key: `${getClientKey(req)}:${body.phone}`,
+        ttlSeconds: 10 * 60,
+        limit: 12,
+      });
+      res.json(await engine.inviteLogin(body.phone, body.inviteCode, body.name, body.referralCode));
     }),
   );
 

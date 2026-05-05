@@ -46,13 +46,16 @@ const run = async () => {
       : "Live payouts requested.",
   });
 
+  const inviteLoginConfigured = Boolean(config.ENABLE_INVITE_LOGIN && config.INVITE_CODE);
   const msg91Configured = Boolean(config.MSG91_AUTH_KEY && config.MSG91_TEMPLATE_ID);
   checks.push({
-    name: "MSG91 OTP",
-    ok: msg91Configured,
-    detail: msg91Configured
-      ? `Configured against ${config.MSG91_BASE_URL}`
-      : "Missing MSG91_AUTH_KEY / MSG91_TEMPLATE_ID",
+    name: "Auth mode",
+    ok: inviteLoginConfigured || msg91Configured,
+    detail: inviteLoginConfigured
+      ? "Invite login is enabled for closed beta access."
+      : msg91Configured
+        ? `MSG91 OTP configured against ${config.MSG91_BASE_URL}`
+        : "Missing invite login configuration and MSG91 OTP configuration",
   });
 
   checks.push({
@@ -157,7 +160,7 @@ const run = async () => {
     if (check.name === "Redis" && config.OTP_STATE_FILE_PATH) {
       return false;
     }
-    return !check.ok && ["Cashfree credentials", "Postgres", "Redis", "MSG91 OTP", "Production safety"].includes(check.name);
+    return !check.ok && ["Cashfree credentials", "Postgres", "Redis", "Auth mode", "Production safety"].includes(check.name);
   });
 
   process.exitCode = hasBlockingIssue ? 1 : 0;

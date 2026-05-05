@@ -48,9 +48,12 @@ OTP in development:
   - `ALLOW_DEV_HEADERS=false`
   - `ALLOW_MEMORY_INFRASTRUCTURE=false`
   - `EXPLICIT_MOCK_PAYMENTS=false`
+- Current staging/pre-production flow can keep `CASHFREE_BASE_URL=https://sandbox.cashfree.com`
+  until live Cashfree credentials are available.
 - Payouts may stay mocked for phase 1 launch:
   - `EXPLICIT_MOCK_PAYOUTS=true`
 - Production OTP is expected to use `MSG91`.
+- Closed beta can run with invite-code login instead of SMS OTP.
 - Admin seeded credentials should never be used in production.
 - Render blueprint:
   - [render.yaml](./render.yaml)
@@ -88,8 +91,9 @@ If `DATABASE_URL` is present, the API boots with `PostgresStore` automatically a
   - `CASHFREE_PAYMENT_API_VERSION`
   - `CASHFREE_PAYOUT_API_VERSION`
   - optional `CASHFREE_WEBHOOK_SECRET`
-  - `MSG91_AUTH_KEY`
-  - `MSG91_TEMPLATE_ID`
+  - `INVITE_CODE` for closed beta login
+  - or `MSG91_AUTH_KEY`
+  - or `MSG91_TEMPLATE_ID`
 5. Set `EXPLICIT_MOCK_PAYMENTS=false`
 6. Keep `EXPLICIT_MOCK_PAYOUTS=true` until your Cashfree payouts account/API access is enabled, then switch it to `false`
 7. Rotate:
@@ -99,7 +103,10 @@ If `DATABASE_URL` is present, the API boots with `PostgresStore` automatically a
 8. Ensure:
    - `ALLOW_DEV_HEADERS=false`
    - `ALLOW_MEMORY_INFRASTRUCTURE=false`
-9. Run:
+9. Choose one auth mode:
+   - closed beta: `ENABLE_INVITE_LOGIN=true` and set `INVITE_CODE`
+   - SMS OTP: set `ENABLE_INVITE_LOGIN=false` and provide `MSG91_*`
+10. Run:
 
 ```bash
 npm run doctor:api

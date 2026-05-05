@@ -17,6 +17,21 @@ const createEngine = () =>
     }),
   );
 
+const createInviteEngine = () =>
+  new PlatformEngine(
+    new InMemoryStore(),
+    new MemoryOtpStore(),
+    readConfig({
+      NODE_ENV: "test",
+      JWT_SECRET: "reward-wallet-test-secret",
+      ALLOW_MEMORY_INFRASTRUCTURE: "true",
+      ALLOW_DEV_HEADERS: "true",
+      EXPLICIT_MOCK_PAYMENTS: "true",
+      ENABLE_INVITE_LOGIN: "true",
+      INVITE_CODE: "BETA2026",
+    }),
+  );
+
 const createLivePaymentsMockPayoutsEngine = () =>
   new PlatformEngine(
     new InMemoryStore(),
@@ -145,5 +160,36 @@ describe("production config safety", () => {
         REDIS_URL: "redis://localhost:6379",
       }),
     ).toThrow(/Invalid production configuration/);
+  });
+
+  it("allows production config when invite login is enabled", () => {
+    expect(() =>
+      readConfig({
+        NODE_ENV: "production",
+        DATABASE_URL: "postgres://prod:prod@localhost:5432/reward_wallet",
+        REDIS_URL: "redis://localhost:6379",
+        JWT_SECRET: "reward-wallet-production-secret-123",
+        ALLOW_DEV_HEADERS: "false",
+        ALLOW_MEMORY_INFRASTRUCTURE: "false",
+        ADMIN_SUPER_PASSWORD: "super-strong-password",
+        ADMIN_OPERATOR_PASSWORD: "operator-strong-password",
+        EXPLICIT_MOCK_PAYMENTS: "false",
+        CASHFREE_CLIENT_ID: "test_client",
+        CASHFREE_CLIENT_SECRET: "test_secret",
+        ENABLE_INVITE_LOGIN: "true",
+        INVITE_CODE: "BETA2026",
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("invite login", () => {
+  it("creates a user session with a valid invite code", async () => {
+    const engine = createInviteEngine();
+    const session = await engine.inviteLogin("9000000099", "beta2026", "Invite User");
+
+    expect(session.user.phone).toBe("9000000099");
+    expect(session.user.id).toMatch(/^\d{7}$/);
+    expect(session.walletSummary.userId).toBe(session.user.id);
   });
 });

@@ -122,37 +122,25 @@ export class PlatformEngine {
       throw new AppError("invalid_otp", "Invalid or expired OTP", 401);
     }
 
-    let user = this.store.findUserByPhone(phone);
-    if (user && user.role !== "user") {
-      throw new AppError("invalid_user_role", "This phone is reserved for admin access", 403);
-    }
-
-    if (!user) {
-      const referrer = referralCode ? this.store.findUserByReferralCode(referralCode) : undefined;
-      user = {
-        id: createSevenDigitUserId(new Set(this.store.users.keys())),
-        phone,
-        name: name || `User ${phone.slice(-4)}`,
-        referralCode: `REF${phone.slice(-6)}`,
-        referredByUserId: referrer?.id,
-        role: "user",
-        blocked: false,
-        createdAt: now(),
-      };
-      this.store.users.set(user.id, user);
-      this.store.createWallet(user.id);
-      if (referrer) {
-        const referrerWallet = this.store.getWallet(referrer.id);
-        referrerWallet.rewardBalance += 25;
-        referrerWallet.updatedAt = now();
-        this.store.addWalletTransaction(referrer.id, "reward_credit", 25, {
-          reason: "referral",
-          referredUserId: user.id,
-        });
-      }
-    }
+    const user = this.findOrCreateEndUser(phone, name, referralCode);
 
     await this.otpStore.delete(phone);
+    await this.store.flush();
+    return this.buildAuthSession(user);
+  }
+
+  async inviteLogin(phone: string, inviteCode: string, name?: string, referralCode?: string) {
+    if (!this.config.ENABLE_INVITE_LOGIN || !this.config.INVITE_CODE) {
+      throw new AppError("invite_login_disabled", "Invite login is not enabled", 400);
+    }
+
+    const normalizedInviteCode = inviteCode.trim().toUpperCase();
+    const expectedInviteCode = this.config.INVITE_CODE.trim().toUpperCase();
+    if (normalizedInviteCode !== expectedInviteCode) {
+      throw new AppError("invalid_invite_code", "Invalid invite code", 401);
+    }
+
+    const user = this.findOrCreateEndUser(phone, name, referralCode);
     await this.store.flush();
     return this.buildAuthSession(user);
   }
@@ -728,6 +716,7 @@ export class PlatformEngine {
       databaseConfigured: Boolean(this.config.DATABASE_URL),
       redisConfigured: Boolean(this.config.REDIS_URL),
       otpProvider: this.otpProvider.channel,
+      authMode: this.config.ENABLE_INVITE_LOGIN ? "invite" : "otp",
     };
   }
 
@@ -773,6 +762,40 @@ export class PlatformEngine {
       return "123456";
     }
     return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  private findOrCreateEndUser(phone: string, name?: string, referralCode?: string) {
+    let user = this.store.findUserByPhone(phone);
+    if (user && user.role !== "user") {
+      throw new AppError("invalid_user_role", "This phone is reserved for admin access", 403);
+    }
+
+    if (!user) {
+      const referrer = referralCode ? this.store.findUserByReferralCode(referralCode) : undefined;
+      user = {
+        id: createSevenDigitUserId(new Set(this.store.users.keys())),
+        phone,
+        name: name || `User ${phone.slice(-4)}`,
+        referralCode: `REF${phone.slice(-6)}`,
+        referredByUserId: referrer?.id,
+        role: "user",
+        blocked: false,
+        createdAt: now(),
+      };
+      this.store.users.set(user.id, user);
+      this.store.createWallet(user.id);
+      if (referrer) {
+        const referrerWallet = this.store.getWallet(referrer.id);
+        referrerWallet.rewardBalance += 25;
+        referrerWallet.updatedAt = now();
+        this.store.addWalletTransaction(referrer.id, "reward_credit", 25, {
+          reason: "referral",
+          referredUserId: user.id,
+        });
+      }
+    }
+
+    return user;
   }
 
   private applyReward(deposit: DepositOrder): number {
