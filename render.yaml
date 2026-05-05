@@ -1,15 +1,4 @@
-databases:
-  - name: reward-wallet-db
-    plan: starter
-    databaseName: reward_wallet
-    user: reward_wallet
-
 services:
-  - type: redis
-    name: reward-wallet-redis
-    plan: starter
-    maxmemoryPolicy: allkeys-lru
-
   - type: web
     name: reward-wallet-api
     runtime: node
@@ -24,14 +13,9 @@ services:
       - key: PORT
         value: 10000
       - key: DATABASE_URL
-        fromDatabase:
-          name: reward-wallet-db
-          property: connectionString
+        sync: false
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: reward-wallet-redis
-          property: connectionString
+        sync: false
       - key: ALLOW_DEV_HEADERS
         value: "false"
       - key: ALLOW_MEMORY_INFRASTRUCTURE

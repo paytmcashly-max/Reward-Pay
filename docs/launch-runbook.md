@@ -2,8 +2,13 @@
 
 ## 1. Before going live
 
-- Confirm `render.yaml` services are created and healthy.
+- Confirm the Render web service is created and healthy.
+- Confirm external infrastructure is ready:
+  - `DATABASE_URL` from Supabase Postgres
+  - `REDIS_URL` from Render Key Value or another hosted Redis-compatible provider
 - Set live values for:
+  - `DATABASE_URL`
+  - `REDIS_URL`
   - `CASHFREE_CLIENT_ID`
   - `CASHFREE_CLIENT_SECRET`
   - `CASHFREE_WEBHOOK_SECRET`
@@ -26,6 +31,7 @@
   - `cashfree.paymentsLive=true`
   - `otpProvider=msg91`
 - Verify Postgres migration and seed completed without error.
+- If using Supabase, verify the connection string includes SSL.
 
 ## 3. Payment verification
 

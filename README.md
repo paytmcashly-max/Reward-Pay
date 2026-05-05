@@ -76,7 +76,9 @@ If `DATABASE_URL` is present, the API boots with `PostgresStore` automatically a
 ## Live Switch Checklist
 
 1. Set `DATABASE_URL` in `apps/api/.env`
+   - Supabase Postgres works directly with the current API runtime
 2. Set `REDIS_URL` in `apps/api/.env`
+   - Use Render Key Value or another hosted Redis-compatible service
 3. For non-admin local development, keep:
    - `STATE_FILE_PATH=./.data/platform-state.json`
    - `OTP_STATE_FILE_PATH=./.data/otp-state.json`
@@ -107,6 +109,13 @@ npm run dev:api
 ```
 
 Use `GET /health/providers` to confirm whether Cashfree, Postgres, and Redis are live.
+
+## Render + Supabase Production Shape
+
+- Host the API on Render using [render.yaml](./render.yaml)
+- Use Supabase for `DATABASE_URL`
+- Use Render Key Value or another hosted Redis-compatible provider for `REDIS_URL`
+- Fill the remaining production secrets in Render before the first deploy
 
 ## Production APK Build
 
