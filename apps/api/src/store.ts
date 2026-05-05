@@ -163,6 +163,38 @@ export class InMemoryStore {
     return event;
   }
 
+  hasDepositProviderEvent(
+    depositOrderId: string,
+    eventType: string,
+    matcher?: (event: DepositProviderEvent) => boolean,
+  ) {
+    return this.depositProviderEvents.some(
+      (event) =>
+        event.depositOrderId === depositOrderId &&
+        event.eventType === eventType &&
+        (matcher ? matcher(event) : true),
+    );
+  }
+
+  findDepositProviderEvents(depositOrderId: string, eventType?: string) {
+    return this.depositProviderEvents.filter(
+      (event) => event.depositOrderId === depositOrderId && (!eventType || event.eventType === eventType),
+    );
+  }
+
+  hasWalletTransactionForDeposit(userId: string, type: WalletTransactionType, depositId: string) {
+    return this.walletTransactions.some(
+      (transaction) =>
+        transaction.userId === userId &&
+        transaction.type === type &&
+        transaction.metadata.depositId === depositId,
+    );
+  }
+
+  findSellOrderByDeposit(depositOrderId: string) {
+    return Array.from(this.sellOrders.values()).find((sellOrder) => sellOrder.depositOrderId === depositOrderId);
+  }
+
   getChunkBuckets(): ChunkBucket[] {
     return Array.from(this.rewardChunkBuckets.values());
   }

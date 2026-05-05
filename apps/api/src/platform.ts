@@ -1,17 +1,28 @@
+import {
+  walletBalanceExplainers,
+} from "@reward-wallet/shared";
 import type {
+  AdminRiskReport,
   AdminSession,
   ChunkBucket,
   DemandPool,
   DepositOrder,
   GameDefinition,
+  MoneyTimelineStep,
   PaymentProvider,
+  ReconciliationEntry,
+  ReconciliationReport,
   ReferralSummary,
+  RiskIndicator,
   RewardRule,
   SellOrder,
   SellOrderChunk,
   TradeMatch,
   User,
+  WalletBalanceExplainer,
+  WalletOverview,
   WalletSummary,
+  WithdrawalEligibility,
   WithdrawBeneficiary,
   WithdrawRequest,
 } from "@reward-wallet/shared";
@@ -33,6 +44,8 @@ import { createSevenDigitUserId, InMemoryStore, id, now } from "./store.js";
 const OTP_TTL_SECONDS = 5 * 60;
 const OTP_RATE_TTL_SECONDS = 5 * 60;
 const OTP_RATE_LIMIT = 5;
+const DEFAULT_MIN_WITHDRAWAL_AMOUNT = 100;
+const DEFAULT_MAX_PENDING_WITHDRAWALS = 3;
 
 export class PlatformEngine {
   readonly paymentAdapters: Record<PaymentProvider, PaymentProviderAdapter>;
@@ -182,6 +195,63 @@ export class PlatformEngine {
     return this.store.walletTransactions.filter((txn) => txn.userId === userId);
   }
 
+  getWalletOverview(userId: string): WalletOverview {
+    this.assertActiveUser(userId);
+    return {
+      walletSummary: this.getWalletSummary(userId),
+      explainers: walletBalanceExplainers,
+      timeline: this.buildMoneyTimeline(userId),
+      withdrawalEligibility: this.getWithdrawalEligibility(userId),
+    };
+  }
+
+  getWithdrawalEligibility(userId: string, requestedAmount?: number): WithdrawalEligibility {
+    const user = this.mustUser(userId, "user");
+    const wallet = this.store.getWallet(userId);
+    const reasons: WithdrawalEligibility["reasons"] = [];
+    const pendingCount = this.listWithdrawalsUnsafe(userId).filter((request) =>
+      ["queued_for_review", "approved", "provider_processing"].includes(request.status),
+    ).length;
+
+    if (user.blocked) {
+      reasons.push({
+        code: "blocked_user",
+        message: "Your account is blocked from withdrawals right now.",
+      });
+    }
+
+    if (requestedAmount !== undefined && requestedAmount < DEFAULT_MIN_WITHDRAWAL_AMOUNT) {
+      reasons.push({
+        code: "minimum_amount_not_met",
+        message: `Minimum withdrawal amount is Rs ${DEFAULT_MIN_WITHDRAWAL_AMOUNT}.`,
+      });
+    }
+
+    if (requestedAmount !== undefined && wallet.withdrawableBalance < requestedAmount) {
+      reasons.push({
+        code: "insufficient_balance",
+        message: "Only sold and unlocked balance can be withdrawn.",
+      });
+    }
+
+    if (pendingCount >= DEFAULT_MAX_PENDING_WITHDRAWALS) {
+      reasons.push({
+        code: "pending_withdrawal_limit",
+        message: `You already have ${pendingCount} withdrawals under review.`,
+      });
+    }
+
+    return {
+      eligible: reasons.length === 0,
+      requestedAmount,
+      availableAmount: wallet.withdrawableBalance,
+      minimumAmount: DEFAULT_MIN_WITHDRAWAL_AMOUNT,
+      pendingCount,
+      maxPendingWithdrawals: DEFAULT_MAX_PENDING_WITHDRAWALS,
+      reasons,
+    };
+  }
+
   getReferralSummary(userId: string): ReferralSummary {
     this.assertActiveUser(userId);
     return this.store.upsertReferralSummary(userId);
@@ -189,7 +259,7 @@ export class PlatformEngine {
 
   listUserDeposits(userId: string) {
     this.assertActiveUser(userId);
-    return this.listDeposits().filter((deposit) => deposit.userId === userId);
+    return this.listUserDepositsUnsafe(userId);
   }
 
   async createDeposit(userId: string, amount: number, provider: PaymentProvider): Promise<DepositOrder> {
@@ -252,28 +322,52 @@ export class PlatformEngine {
     }
 
     const wallet = this.store.getWallet(deposit.userId);
-    deposit.status = "paid";
-    deposit.updatedAt = now();
-    deposit.status = "verified";
-    wallet.principalBalance += deposit.amount;
-    wallet.updatedAt = now();
-    this.store.addWalletTransaction(deposit.userId, "deposit_principal", deposit.amount, {
-      depositId: deposit.id,
-      provider: deposit.provider,
-    });
+    const stageAlreadyApplied = (eventType: string) => this.store.hasDepositProviderEvent(deposit.id, eventType);
 
-    this.applyReward(deposit);
+    if (!stageAlreadyApplied("deposit.lifecycle.principal_credited")) {
+      deposit.status = "paid";
+      wallet.principalBalance += deposit.amount;
+      wallet.updatedAt = now();
+      this.store.addWalletTransaction(deposit.userId, "deposit_principal", deposit.amount, {
+        depositId: deposit.id,
+        provider: deposit.provider,
+      });
+      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.principal_credited", {
+        amount: deposit.amount,
+      });
+    }
+
+    deposit.status = "verified";
+    deposit.updatedAt = now();
+
+    if (!stageAlreadyApplied("deposit.lifecycle.reward_credited")) {
+      this.applyReward(deposit);
+      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.reward_credited", {
+        amount: deposit.amount,
+      });
+    }
     deposit.status = "reward_credited";
     deposit.updatedAt = now();
 
-    const sellOrder = this.createSellOrder(deposit, wallet.principalBalance);
+    let sellOrder = this.store.findSellOrderByDeposit(deposit.id);
+    if (!sellOrder) {
+      sellOrder = this.createSellOrder(deposit, wallet.principalBalance);
+      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.chunked", {
+        sellOrderId: sellOrder.id,
+      });
+    }
     deposit.status = "chunked";
     deposit.updatedAt = now();
 
-    this.listChunks(sellOrder);
-    wallet.principalBalance -= deposit.amount;
-    wallet.listedBalance += deposit.amount;
-    wallet.updatedAt = now();
+    if (!stageAlreadyApplied("deposit.lifecycle.listed")) {
+      this.listChunks(sellOrder);
+      wallet.principalBalance = Math.max(0, wallet.principalBalance - deposit.amount);
+      wallet.listedBalance += deposit.amount;
+      wallet.updatedAt = now();
+      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.listed", {
+        sellOrderId: sellOrder.id,
+      });
+    }
 
     deposit.status = "listed";
     deposit.updatedAt = now();
@@ -302,6 +396,14 @@ export class PlatformEngine {
     });
 
     if (verification.successful) {
+      if (
+        this.store.hasDepositProviderEvent(deposit.id, "deposit.status_sync", (event) => event.payload.verificationKey === "success_terminal")
+      ) {
+        return this.confirmDeposit(deposit.id);
+      }
+      this.store.addDepositProviderEvent(deposit.id, provider.provider, "deposit.status_sync", {
+        verificationKey: "success_terminal",
+      });
       const confirmed = await this.confirmDeposit(deposit.id);
       await this.runMatchingCycle();
       return confirmed;
@@ -359,7 +461,17 @@ export class PlatformEngine {
       throw new AppError("deposit_not_found", "Deposit not found for webhook payload", 404);
     }
 
+    const idempotencyKey = this.getWebhookIdempotencyKey(provider, payload, resolved.providerOrderId);
+    if (
+      idempotencyKey &&
+      this.store.hasDepositProviderEvent(deposit.id, "deposit.webhook", (event) => event.payload.idempotencyKey === idempotencyKey)
+    ) {
+      return deposit;
+    }
     this.store.addDepositProviderEvent(deposit.id, provider, "deposit.webhook", payload);
+    if (idempotencyKey) {
+      this.store.addDepositProviderEvent(deposit.id, provider, "deposit.webhook", { idempotencyKey });
+    }
 
     if (!resolved.successful) {
       await this.store.flush();
@@ -402,10 +514,14 @@ export class PlatformEngine {
     if (!beneficiary || beneficiary.userId !== userId) {
       throw new AppError("beneficiary_not_found", "Beneficiary not found", 404);
     }
-    const wallet = this.store.getWallet(userId);
-    if (wallet.withdrawableBalance < amount) {
-      throw new AppError("insufficient_withdrawable_balance", "Insufficient withdrawable balance", 400);
+    const eligibility = this.getWithdrawalEligibility(userId, amount);
+    if (!eligibility.eligible) {
+      const firstReason = eligibility.reasons[0];
+      throw new AppError(firstReason.code, firstReason.message, 400, {
+        eligibility,
+      });
     }
+    const wallet = this.store.getWallet(userId);
 
     wallet.withdrawableBalance -= amount;
     wallet.lockedBalance += amount;
@@ -428,7 +544,7 @@ export class PlatformEngine {
 
   listWithdrawals(userId: string) {
     this.assertActiveUser(userId);
-    return Array.from(this.store.withdrawRequests.values()).filter((item) => item.userId === userId);
+    return this.listWithdrawalsUnsafe(userId);
   }
 
   listAllWithdrawals() {
@@ -519,6 +635,7 @@ export class PlatformEngine {
 
   async replaceRewardRules(rules: RewardRule[], adminUserId: string) {
     this.mustUser(adminUserId, "admin");
+    this.validateRewardRules(rules);
     this.store.rewardRules.clear();
     for (const rule of rules) {
       this.store.rewardRules.set(rule.id, rule);
@@ -684,6 +801,69 @@ export class PlatformEngine {
     return this.store.adminAuditLogs;
   }
 
+  getAdminRiskReport(): AdminRiskReport {
+    const users = this.listUsers();
+    return {
+      users: Object.fromEntries(users.map((user) => [user.id, this.buildUserRiskIndicator(user.id)])),
+      deposits: Object.fromEntries(this.listDeposits().map((deposit) => [deposit.id, this.buildDepositRiskIndicator(deposit)])),
+      withdrawals: Object.fromEntries(
+        this.listAllWithdrawals().map((withdrawal) => [withdrawal.id, this.buildWithdrawalRiskIndicator(withdrawal)]),
+      ),
+    };
+  }
+
+  getReconciliationReport(): ReconciliationReport {
+    const entries: ReconciliationEntry[] = [];
+    for (const deposit of this.listDeposits()) {
+      const successfulSyncSeen = this.store.hasDepositProviderEvent(
+        deposit.id,
+        "deposit.status_sync",
+        (event) => event.payload.verified === true || event.payload.verificationKey === "success_terminal",
+      );
+      const webhookSuccessSeen = this.store.hasDepositProviderEvent(
+        deposit.id,
+        "deposit.webhook",
+        (event) => {
+          const paymentStatus =
+            (event.payload.payment_status as string | undefined) ??
+            (event.payload.type as string | undefined) ??
+            ((event.payload.data as { payment?: { payment_status?: string } } | undefined)?.payment?.payment_status);
+          return ["SUCCESS", "PAID", "PAYMENT_SUCCESS_WEBHOOK"].includes(String(paymentStatus ?? "").toUpperCase());
+        },
+      );
+
+      if ((successfulSyncSeen || webhookSuccessSeen) && deposit.status !== "listed") {
+        entries.push({
+          id: `recon_sync_${deposit.id}`,
+          kind: "provider_paid_app_pending",
+          depositId: deposit.id,
+          userId: deposit.userId,
+          amount: deposit.amount,
+          status: deposit.status,
+          note: "Provider confirmation exists but the app has not fully listed this deposit yet.",
+          createdAt: deposit.createdAt,
+          updatedAt: deposit.updatedAt,
+        });
+      }
+
+      if (deposit.status === "listed" && !successfulSyncSeen && !webhookSuccessSeen) {
+        entries.push({
+          id: `recon_provider_${deposit.id}`,
+          kind: "listed_without_provider_success",
+          depositId: deposit.id,
+          userId: deposit.userId,
+          amount: deposit.amount,
+          status: deposit.status,
+          note: "App marked this deposit as listed without a recorded provider success event.",
+          createdAt: deposit.createdAt,
+          updatedAt: deposit.updatedAt,
+        });
+      }
+    }
+
+    return { entries };
+  }
+
   getProviderStatus() {
     const paymentsLive =
       Boolean(
@@ -728,6 +908,262 @@ export class PlatformEngine {
         retryAfterSeconds: ttlSeconds,
       });
     }
+  }
+
+  private buildMoneyTimeline(userId: string): MoneyTimelineStep[] {
+    const deposits: MoneyTimelineStep[] = this.listUserDeposits(userId).map((deposit) => ({
+      id: `deposit:${deposit.id}`,
+      type: "deposit_paid" as const,
+      title: "Deposit paid",
+      description: `Deposit ${deposit.status === "listed" ? "completed and moved into your wallet flow." : `is ${deposit.status.replaceAll("_", " ")}.`}`,
+      state:
+        deposit.status === "failed"
+          ? "failed"
+          : deposit.status === "cancelled"
+            ? "failed"
+            : deposit.status === "listed"
+              ? "completed"
+              : "active",
+      amount: deposit.amount,
+      createdAt: deposit.updatedAt || deposit.createdAt,
+      depositId: deposit.id,
+    }));
+
+    const rewardCredits: MoneyTimelineStep[] = this.getWalletTransactions(userId)
+      .filter((transaction) => transaction.type === "reward_credit")
+      .map((transaction) => ({
+        id: `reward:${transaction.id}`,
+        type: "reward_credited" as const,
+        title: "Reward credited",
+        description: "Reward balance increased after a verified reward event.",
+        state: "completed" as const,
+        amount: transaction.amount,
+        createdAt: transaction.createdAt,
+        depositId: typeof transaction.metadata.depositId === "string" ? transaction.metadata.depositId : undefined,
+      }));
+
+    const listings: MoneyTimelineStep[] = this.getWalletTransactions(userId)
+      .filter((transaction) => transaction.type === "chunk_listed")
+      .map((transaction) => ({
+        id: `listed:${transaction.id}`,
+        type: "amount_listed" as const,
+        title: "Amount listed",
+        description: "Deposit amount was split and listed into the market flow.",
+        state: "completed" as const,
+        amount: Math.abs(transaction.amount),
+        createdAt: transaction.createdAt,
+        depositId: this.resolveDepositIdFromSellOrder(transaction.metadata.sellOrderId as string | undefined),
+      }));
+
+    const matches: MoneyTimelineStep[] = this.getWalletTransactions(userId)
+      .filter((transaction) => transaction.type === "chunk_match")
+      .map((transaction) => ({
+        id: `matched:${transaction.id}`,
+        type: "amount_matched" as const,
+        title: "Matched / sold",
+        description: "Listed balance matched against demand and became withdrawable.",
+        state: "completed" as const,
+        amount: transaction.amount,
+        createdAt: transaction.createdAt,
+      }));
+
+    const withdrawals: MoneyTimelineStep[] = this.listWithdrawals(userId).flatMap((withdrawal) => [
+      {
+        id: `withdraw-request:${withdrawal.id}`,
+        type: "withdrawal_requested" as const,
+        title: "Withdrawal requested",
+        description: "Withdrawable balance moved into review.",
+        state:
+          withdrawal.status === "rejected" || withdrawal.status === "reversed"
+            ? "failed"
+            : withdrawal.status === "paid"
+              ? "completed"
+              : "active",
+        amount: withdrawal.amount,
+        createdAt: withdrawal.createdAt,
+        withdrawalId: withdrawal.id,
+      },
+      ...(withdrawal.status === "paid"
+        ? [
+            {
+              id: `withdraw-paid:${withdrawal.id}`,
+              type: "withdrawal_paid" as const,
+              title: "Withdrawal paid",
+              description: "Provider confirmed the payout.",
+              state: "completed" as const,
+              amount: withdrawal.amount,
+              createdAt: withdrawal.updatedAt,
+              withdrawalId: withdrawal.id,
+            },
+          ]
+        : []),
+      ...(withdrawal.status === "rejected" || withdrawal.status === "reversed"
+        ? [
+            {
+              id: `withdraw-reversed:${withdrawal.id}`,
+              type: "withdrawal_reversed" as const,
+              title: "Withdrawal reversed",
+              description: "The request did not complete and funds were returned.",
+              state: "failed" as const,
+              amount: withdrawal.amount,
+              createdAt: withdrawal.updatedAt,
+              withdrawalId: withdrawal.id,
+            },
+          ]
+        : []),
+    ]);
+
+    return [...deposits, ...rewardCredits, ...listings, ...matches, ...withdrawals].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+  }
+
+  private resolveDepositIdFromSellOrder(sellOrderId?: string) {
+    if (!sellOrderId) {
+      return undefined;
+    }
+    return this.store.sellOrders.get(sellOrderId)?.depositOrderId;
+  }
+
+  private getWebhookIdempotencyKey(provider: PaymentProvider, payload: Record<string, unknown>, providerOrderId?: string) {
+    const paymentId =
+      (payload.cf_payment_id as string | undefined) ??
+      ((payload.data as { payment?: { cf_payment_id?: string } } | undefined)?.payment?.cf_payment_id);
+    const type = (payload.type as string | undefined) ?? (payload.payment_status as string | undefined) ?? "unknown";
+    return `${provider}:${providerOrderId ?? "unknown"}:${paymentId ?? "unknown"}:${type}`;
+  }
+
+  private validateRewardRules(rules: RewardRule[]) {
+    const activeRules = rules
+      .map((rule) => ({ ...rule }))
+      .sort((a, b) => a.minDepositAmount - b.minDepositAmount || a.maxDepositAmount - b.maxDepositAmount);
+
+    for (const rule of activeRules) {
+      if (rule.minDepositAmount < 0 || rule.maxDepositAmount < 0 || rule.rewardPercent < 0) {
+        throw new AppError("invalid_reward_rule", "Reward rules cannot contain negative values.", 400);
+      }
+      if (rule.rewardPercent > 100) {
+        throw new AppError("invalid_reward_rule", "Reward percentage cannot exceed 100.", 400);
+      }
+      if (rule.maxDepositAmount < rule.minDepositAmount) {
+        throw new AppError("invalid_reward_rule", `Reward rule ${rule.id} has an invalid min/max range.`, 400);
+      }
+    }
+
+    for (let index = 1; index < activeRules.length; index += 1) {
+      const previous = activeRules[index - 1];
+      const current = activeRules[index];
+      if (previous.active && current.active && current.minDepositAmount <= previous.maxDepositAmount) {
+        throw new AppError(
+          "overlapping_reward_rules",
+          `Active reward rules ${previous.id} and ${current.id} have overlapping ranges.`,
+          400,
+        );
+      }
+    }
+  }
+
+  private buildUserRiskIndicator(userId: string): RiskIndicator {
+    const user = this.store.users.get(userId);
+    const deposits = this.listUserDepositsUnsafe(userId);
+    const withdrawals = this.listWithdrawalsUnsafe(userId);
+    const reasons: string[] = [];
+
+    if (user?.blocked) {
+      reasons.push("User is currently blocked.");
+    }
+
+    const failedDeposits = deposits.filter((deposit) => deposit.status === "failed" || deposit.status === "cancelled").length;
+    if (failedDeposits >= 2) {
+      reasons.push(`${failedDeposits} recent deposits failed or were cancelled.`);
+    }
+
+    const pendingWithdrawals = withdrawals.filter((withdrawal) =>
+      ["queued_for_review", "approved", "provider_processing"].includes(withdrawal.status),
+    ).length;
+    if (pendingWithdrawals >= 2) {
+      reasons.push(`${pendingWithdrawals} withdrawals are still pending review or provider action.`);
+    }
+
+    const recentDeposit = deposits.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const recentWithdrawal = withdrawals.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    if (recentDeposit && recentWithdrawal) {
+      const depositTime = new Date(recentDeposit.updatedAt).getTime();
+      const withdrawalTime = new Date(recentWithdrawal.createdAt).getTime();
+      if (withdrawalTime - depositTime >= 0 && withdrawalTime - depositTime < 2 * 60 * 60 * 1000) {
+        reasons.push("Withdrawal was requested shortly after a deposit.");
+      }
+    }
+
+    const rewardCredits = this.getWalletTransactionsUnsafe(userId)
+      .filter((transaction) => transaction.type === "reward_credit")
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+    const soldAmount = this.store.getWallet(userId).soldBalance;
+    if (rewardCredits > 0 && soldAmount > 0 && rewardCredits / Math.max(soldAmount, 1) > 0.5) {
+      reasons.push("Reward usage is high compared with sold balance.");
+    }
+
+    return {
+      level: this.resolveRiskLevel(reasons.length),
+      reasons,
+    };
+  }
+
+  private buildDepositRiskIndicator(deposit: DepositOrder): RiskIndicator {
+    const reasons: string[] = [];
+    const userRisk = this.buildUserRiskIndicator(deposit.userId);
+    if (userRisk.level !== "low") {
+      reasons.push(...userRisk.reasons.slice(0, 2));
+    }
+    const failedAttempts = this.store.findDepositProviderEvents(deposit.id, "deposit.status_sync").filter((event) => event.payload.terminal === true && event.payload.verified !== true).length;
+    if (failedAttempts >= 2) {
+      reasons.push("Multiple failed payment confirmations were recorded.");
+    }
+    if (deposit.status !== "listed" && this.store.hasDepositProviderEvent(deposit.id, "deposit.webhook")) {
+      reasons.push("Provider webhook exists but deposit is not fully listed yet.");
+    }
+
+    return {
+      level: this.resolveRiskLevel(reasons.length),
+      reasons,
+    };
+  }
+
+  private buildWithdrawalRiskIndicator(withdrawal: WithdrawRequest): RiskIndicator {
+    const reasons: string[] = [];
+    const userRisk = this.buildUserRiskIndicator(withdrawal.userId);
+    if (userRisk.level !== "low") {
+      reasons.push(...userRisk.reasons.slice(0, 2));
+    }
+    if (["queued_for_review", "approved", "provider_processing"].includes(withdrawal.status)) {
+      reasons.push("Withdrawal is still waiting for operator or provider completion.");
+    }
+    return {
+      level: this.resolveRiskLevel(reasons.length),
+      reasons,
+    };
+  }
+
+  private resolveRiskLevel(reasonCount: number): RiskIndicator["level"] {
+    if (reasonCount >= 3) {
+      return "high";
+    }
+    if (reasonCount >= 1) {
+      return "medium";
+    }
+    return "low";
+  }
+
+  private listUserDepositsUnsafe(userId: string) {
+    return this.listDeposits().filter((deposit) => deposit.userId === userId);
+  }
+
+  private listWithdrawalsUnsafe(userId: string) {
+    return Array.from(this.store.withdrawRequests.values()).filter((item) => item.userId === userId);
+  }
+
+  private getWalletTransactionsUnsafe(userId: string) {
+    return this.store.walletTransactions.filter((transaction) => transaction.userId === userId);
   }
 
   private buildAuthSession(user: User) {

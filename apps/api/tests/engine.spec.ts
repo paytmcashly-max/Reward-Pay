@@ -66,8 +66,46 @@ describe("deposit, reward, and chunk flow", () => {
 
     expect(verified.status).toBe("listed");
     expect(wallet.rewardBalance).toBe(70);
-    expect(wallet.listedBalance).toBe(1000);
+    expect(wallet.listedBalance + wallet.soldBalance).toBe(1000);
     expect(wallet.principalBalance).toBe(0);
+  });
+
+  it("does not double-credit on duplicate confirmation attempts", async () => {
+    const engine = createEngine();
+    const user = await bootstrapUser(engine);
+    const deposit = await engine.createDeposit(user.id, 1000, "cashfree");
+
+    await engine.confirmDeposit(deposit.id);
+    await engine.confirmDeposit(deposit.id);
+
+    const wallet = engine.getWalletSummary(user.id);
+    const transactions = engine.getWalletTransactions(user.id);
+    const sellOrder = engine.store.findSellOrderByDeposit(deposit.id);
+
+    expect(wallet.rewardBalance).toBe(70);
+    expect(wallet.listedBalance + wallet.soldBalance).toBe(1000);
+    expect(transactions.filter((txn) => txn.type === "deposit_principal" && txn.metadata.depositId === deposit.id)).toHaveLength(1);
+    expect(transactions.filter((txn) => txn.type === "reward_credit" && txn.metadata.depositId === deposit.id)).toHaveLength(1);
+    expect(transactions.filter((txn) => txn.type === "chunk_listed" && txn.metadata.sellOrderId === sellOrder?.id)).toHaveLength(1);
+  });
+
+  it("does not double-credit on duplicate sync attempts", async () => {
+    const engine = createEngine();
+    const user = await bootstrapUser(engine);
+    const deposit = await engine.createDeposit(user.id, 1000, "cashfree");
+
+    await engine.syncDepositStatus(deposit.id, user.id);
+    await engine.syncDepositStatus(deposit.id, user.id);
+
+    const wallet = engine.getWalletSummary(user.id);
+    const transactions = engine.getWalletTransactions(user.id);
+    const sellOrder = engine.store.findSellOrderByDeposit(deposit.id);
+
+    expect(wallet.rewardBalance).toBe(70);
+    expect(wallet.listedBalance + wallet.soldBalance).toBe(1000);
+    expect(transactions.filter((txn) => txn.type === "deposit_principal" && txn.metadata.depositId === deposit.id)).toHaveLength(1);
+    expect(transactions.filter((txn) => txn.type === "reward_credit" && txn.metadata.depositId === deposit.id)).toHaveLength(1);
+    expect(transactions.filter((txn) => txn.type === "chunk_listed" && txn.metadata.sellOrderId === sellOrder?.id)).toHaveLength(1);
   });
 });
 
@@ -97,7 +135,9 @@ describe("withdrawal eligibility", () => {
       upiId: "user@upi",
     });
 
-    await expect(engine.createWithdrawal(user.id, beneficiary.id, 100)).rejects.toThrow();
+    await expect(engine.createWithdrawal(user.id, beneficiary.id, 100)).rejects.toMatchObject({
+      code: "insufficient_balance",
+    });
 
     const deposit = await engine.createDeposit(user.id, 1000, "cashfree");
     await engine.confirmDeposit(deposit.id);
@@ -107,6 +147,32 @@ describe("withdrawal eligibility", () => {
     const request = await engine.createWithdrawal(user.id, beneficiary.id, Math.min(100, wallet.withdrawableBalance));
 
     expect(request.status).toBe("queued_for_review");
+  });
+
+  it("blocks blocked users and enforces pending limits", async () => {
+    const engine = createEngine();
+    const user = await bootstrapUser(engine);
+    const beneficiary = await engine.createBeneficiary(user.id, {
+      type: "upi",
+      label: "Main UPI",
+      accountName: "Test User",
+      upiId: "user@upi",
+    });
+    const deposit = await engine.createDeposit(user.id, 1000, "cashfree");
+    await engine.confirmDeposit(deposit.id);
+    await engine.runMatchingCycle();
+
+    await engine.createWithdrawal(user.id, beneficiary.id, 100);
+    await engine.createWithdrawal(user.id, beneficiary.id, 100);
+    await engine.createWithdrawal(user.id, beneficiary.id, 100);
+    await expect(engine.createWithdrawal(user.id, beneficiary.id, 100)).rejects.toMatchObject({
+      code: "pending_withdrawal_limit",
+    });
+
+    await engine.setUserBlocked(user.id, true, "admin_super");
+    await expect(engine.createWithdrawal(user.id, beneficiary.id, 100)).rejects.toMatchObject({
+      code: "user_blocked",
+    });
   });
 });
 
@@ -180,6 +246,88 @@ describe("production config safety", () => {
         INVITE_CODE: "BETA2026",
       }),
     ).not.toThrow();
+  });
+});
+
+describe("wallet overview and admin risk", () => {
+  it("returns a wallet timeline and explainer set", async () => {
+    const engine = createEngine();
+    const user = await bootstrapUser(engine);
+    const deposit = await engine.createDeposit(user.id, 1000, "cashfree");
+    await engine.syncDepositStatus(deposit.id, user.id);
+    const beneficiary = await engine.createBeneficiary(user.id, {
+      type: "upi",
+      label: "Main UPI",
+      accountName: "Test User",
+      upiId: "user@upi",
+    });
+    await engine.createWithdrawal(user.id, beneficiary.id, 100);
+
+    const overview = engine.getWalletOverview(user.id);
+
+    expect(overview.explainers.length).toBeGreaterThanOrEqual(6);
+    expect(overview.timeline.some((step) => step.type === "deposit_paid")).toBe(true);
+    expect(overview.timeline.some((step) => step.type === "reward_credited")).toBe(true);
+    expect(overview.timeline.some((step) => step.type === "amount_listed")).toBe(true);
+    expect(overview.timeline.some((step) => step.type === "withdrawal_requested")).toBe(true);
+  });
+
+  it("computes admin risk indicators from existing money activity", async () => {
+    const engine = createEngine();
+    const user = await bootstrapUser(engine);
+    const beneficiary = await engine.createBeneficiary(user.id, {
+      type: "upi",
+      label: "Main UPI",
+      accountName: "Test User",
+      upiId: "user@upi",
+    });
+    const deposit = await engine.createDeposit(user.id, 1000, "cashfree");
+    await engine.syncDepositStatus(deposit.id, user.id);
+    await engine.createWithdrawal(user.id, beneficiary.id, 100);
+    await engine.setUserBlocked(user.id, true, "admin_super");
+
+    const risk = engine.getAdminRiskReport();
+
+    expect(risk.users[user.id].level).not.toBe("low");
+    expect(risk.users[user.id].reasons.length).toBeGreaterThan(0);
+    expect(risk.deposits[deposit.id]).toBeTruthy();
+    expect(risk.withdrawals).toBeTruthy();
+  });
+});
+
+describe("reward rule validation", () => {
+  it("rejects overlapping active slabs", async () => {
+    const engine = createEngine();
+    await expect(
+      engine.replaceRewardRules(
+        [
+          { id: "a", minDepositAmount: 100, maxDepositAmount: 500, rewardPercent: 5, active: true, createdAt: new Date().toISOString() },
+          { id: "b", minDepositAmount: 400, maxDepositAmount: 800, rewardPercent: 6, active: true, createdAt: new Date().toISOString() },
+        ],
+        "admin_super",
+      ),
+    ).rejects.toMatchObject({ code: "overlapping_reward_rules" });
+  });
+
+  it("rejects invalid percentages and negative values", async () => {
+    const engine = createEngine();
+    await expect(
+      engine.replaceRewardRules(
+        [
+          { id: "a", minDepositAmount: -100, maxDepositAmount: 500, rewardPercent: 5, active: true, createdAt: new Date().toISOString() },
+        ],
+        "admin_super",
+      ),
+    ).rejects.toMatchObject({ code: "invalid_reward_rule" });
+
+    await expect(
+      engine.replaceRewardRules(
+        [
+          { id: "a", minDepositAmount: 100, maxDepositAmount: 500, rewardPercent: 150, active: true, createdAt: new Date().toISOString() },
+        ],
+        "admin_super",
+      ),
+    ).rejects.toMatchObject({ code: "invalid_reward_rule" });
   });
 });
 

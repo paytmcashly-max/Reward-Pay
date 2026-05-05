@@ -6,11 +6,13 @@ import type {
   ReferralSummary,
   RewardRule,
   User,
+  WalletOverview,
   WalletSummary,
   WalletTransaction,
   WithdrawBeneficiary,
   WithdrawRequest,
 } from "@reward-wallet/shared";
+import { walletBalanceExplainers } from "@reward-wallet/shared";
 import { create } from "zustand";
 import { apiClient, type ProviderStatus } from "@/api/client";
 import { isDemoMode } from "@/config/runtime";
@@ -54,6 +56,7 @@ type MobileStore = {
   sessionToken: string | null;
   user: User | null;
   wallet: WalletSummary;
+  walletOverview: WalletOverview | null;
   referral: ReferralSummary;
   games: GameDefinition[];
   rewardRules: RewardRule[];
@@ -107,8 +110,20 @@ const createDemoWithdrawal = (wallet: WalletSummary, amount: number) => ({
 
 export const useMobileStore = create<MobileStore>((set, get) => {
   const refreshLiveData = async (token: string) => {
-    const [me, transactions, deposits, referral, games, rewardRules, chunkBuckets, beneficiaries, withdrawals, providerStatus] = await Promise.all([
+    const [me, walletOverview, transactions, deposits, referral, games, rewardRules, chunkBuckets, beneficiaries, withdrawals, providerStatus] = await Promise.all([
       apiClient.getMe(token),
+      apiClient.getWalletOverview(token).catch(async () => ({
+        walletSummary: await apiClient.getWalletSummary(token),
+        explainers: walletBalanceExplainers,
+        timeline: [],
+        withdrawalEligibility: await apiClient.getWithdrawalEligibility(token).catch(() => ({
+          eligible: false,
+          availableAmount: 0,
+          pendingCount: 0,
+          maxPendingWithdrawals: 0,
+          reasons: [],
+        })),
+      })),
       apiClient.getWalletTransactions(token),
       apiClient.listDeposits(token),
       apiClient.getReferrals(token),
@@ -122,7 +137,8 @@ export const useMobileStore = create<MobileStore>((set, get) => {
 
     set({
       user: me.user,
-      wallet: me.walletSummary,
+      wallet: walletOverview.walletSummary,
+      walletOverview,
       transactions,
       deposits,
       referral,
@@ -147,6 +163,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
     sessionToken: null,
     user: isDemoMode ? demoUser : null,
     wallet: demoWallet,
+    walletOverview: null,
     referral: demoReferral,
     games: demoGames,
     rewardRules: demoRewardRules,
@@ -171,6 +188,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
           isAuthenticated: true,
           demoMode: true,
           user: demoUser,
+          walletOverview: null,
         });
         return;
       }
@@ -248,6 +266,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
             isAuthenticated: true,
             user: demoUser,
             sessionToken: "demo-token",
+            walletOverview: null,
             isSubmitting: false,
             lastActionMessage: "Demo invite login complete.",
           });
@@ -260,6 +279,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
           sessionToken: session.accessToken,
           user: session.user,
           wallet: session.walletSummary,
+          walletOverview: null,
         });
         await refreshLiveData(session.accessToken);
         set({
@@ -283,6 +303,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
             isAuthenticated: true,
             user: demoUser,
             sessionToken: "demo-token",
+            walletOverview: null,
             isSubmitting: false,
             lastActionMessage: "Demo login complete.",
           });
@@ -295,6 +316,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
           sessionToken: session.accessToken,
           user: session.user,
           wallet: session.walletSummary,
+          walletOverview: null,
         });
         await refreshLiveData(session.accessToken);
         set({
@@ -641,6 +663,7 @@ export const useMobileStore = create<MobileStore>((set, get) => {
         sessionToken: null,
         user: isDemoMode ? demoUser : null,
         wallet: demoWallet,
+        walletOverview: null,
         referral: demoReferral,
         transactions: demoTransactions,
         deposits: [],

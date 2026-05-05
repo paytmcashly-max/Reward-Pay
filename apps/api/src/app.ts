@@ -445,6 +445,21 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
   );
 
   app.get(
+    "/wallet/overview",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getWalletOverview(getUserId(req)));
+    }),
+  );
+
+  app.get(
+    "/wallet/withdrawal-eligibility",
+    asyncRoute(async (req, res) => {
+      const amount = req.query.amount ? Number(routeParam(req.query.amount as string | string[])) : undefined;
+      res.json(engine.getWithdrawalEligibility(getUserId(req), Number.isFinite(amount) ? amount : undefined));
+    }),
+  );
+
+  app.get(
     "/wallet/transactions",
     asyncRoute(async (req, res) => {
       res.json(engine.getWalletTransactions(getUserId(req)));
@@ -753,6 +768,30 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
       const pagination = getPagination(req);
       getAdminId(req);
       res.json(paginate(engine.listAuditLogs(), pagination.page, pagination.pageSize));
+    }),
+  );
+
+  app.get(
+    "/admin/risk-report",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.getAdminRiskReport());
+    }),
+  );
+
+  app.get(
+    "/admin/reconciliation",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.getReconciliationReport());
+    }),
+  );
+
+  app.post(
+    "/admin/deposits/:id/sync",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(await engine.syncDepositStatus(routeParam(req.params.id)));
     }),
   );
 

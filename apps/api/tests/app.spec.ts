@@ -36,6 +36,11 @@ describe("api flow", () => {
     expect(wallet.status).toBe(200);
     expect(wallet.body.userId).toBeTruthy();
 
+    const overview = await request(app).get("/wallet/overview").set("authorization", `Bearer ${token}`);
+    expect(overview.status).toBe(200);
+    expect(Array.isArray(overview.body.explainers)).toBe(true);
+    expect(Array.isArray(overview.body.timeline)).toBe(true);
+
     const me = await request(app).get("/me").set("authorization", `Bearer ${token}`);
     expect(me.status).toBe(200);
     expect(me.body.user.phone).toBe("9000000002");
@@ -64,6 +69,18 @@ describe("api flow", () => {
 
     expect(sync.status).toBe(200);
     expect(sync.body.status).toBe("listed");
+
+    const syncAgain = await request(app)
+      .post(`/deposits/${deposit.body.id}/sync`)
+      .set("authorization", `Bearer ${token}`)
+      .send({});
+
+    expect(syncAgain.status).toBe(200);
+    expect(syncAgain.body.status).toBe("listed");
+
+    const transactions = await request(app).get("/wallet/transactions").set("authorization", `Bearer ${token}`);
+    expect(transactions.status).toBe(200);
+    expect(transactions.body.filter((txn: { type: string; metadata: Record<string, string> }) => txn.type === "deposit_principal" && txn.metadata.depositId === deposit.body.id)).toHaveLength(1);
   });
 
   it("requires a webhook signature when the secret is configured", async () => {
@@ -120,5 +137,48 @@ describe("api flow", () => {
     expect(response.status).toBe(200);
     expect(response.body.user.phone).toBe("9000000055");
     expect(response.body.user.id).toMatch(/^\d{7}$/);
+  });
+
+  it("returns clear withdrawal eligibility errors for blocked users", async () => {
+    const app = createTestApp();
+    await request(app).post("/auth/send-otp").send({ phone: "9000000066" });
+    const verify = await request(app)
+      .post("/auth/verify-otp")
+      .send({ phone: "9000000066", code: "123456", name: "Blocked User" });
+
+    const token = verify.body.accessToken as string;
+    const beneficiary = await request(app)
+      .post("/withdrawals/beneficiaries")
+      .set("authorization", `Bearer ${token}`)
+      .send({
+        type: "upi",
+        label: "Main UPI",
+        accountName: "Blocked User",
+        upiId: "blocked@upi",
+      });
+
+    const adminLogin = await request(app)
+      .post("/admin/auth/login")
+      .send({ phone: "9999999999", password: "admin1234" });
+    const adminToken = adminLogin.body.accessToken as string;
+
+    await request(app)
+      .post(`/admin/users/${verify.body.user.id}/block`)
+      .set("authorization", `Bearer ${adminToken}`)
+      .send({ blocked: true });
+
+    const withdrawal = await request(app)
+      .post("/withdrawals")
+      .set("authorization", `Bearer ${token}`)
+      .send({ beneficiaryId: beneficiary.body.id, amount: 100 });
+
+    const eligibility = await request(app)
+      .get("/wallet/withdrawal-eligibility?amount=100")
+      .set("authorization", `Bearer ${token}`);
+
+    expect(withdrawal.status).toBe(403);
+    expect(withdrawal.body.code).toBe("user_blocked");
+    expect(eligibility.status).toBe(200);
+    expect(eligibility.body.reasons[0].code).toBe("blocked_user");
   });
 });

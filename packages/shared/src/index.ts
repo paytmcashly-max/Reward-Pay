@@ -60,6 +60,109 @@ export interface WalletAccount {
 
 export interface WalletSummary extends WalletAccount {}
 
+export type WalletBalanceKey =
+  | "principalBalance"
+  | "rewardBalance"
+  | "listedBalance"
+  | "soldBalance"
+  | "withdrawableBalance"
+  | "lockedBalance";
+
+export interface WalletBalanceExplainer {
+  key: WalletBalanceKey;
+  label: string;
+  short: string;
+  detail: string;
+}
+
+export const walletBalanceExplainers: WalletBalanceExplainer[] = [
+  {
+    key: "principalBalance",
+    label: "Principal balance",
+    short: "Money you added that is still available in your wallet.",
+    detail: "Principal balance is your own money before it is listed or used in any play or payout flow.",
+  },
+  {
+    key: "rewardBalance",
+    label: "Reward balance",
+    short: "Bonus or promo value credited by rewards and referrals.",
+    detail: "Reward balance comes from reward slabs, referrals, or game outcomes. It is tracked separately from principal.",
+  },
+  {
+    key: "listedBalance",
+    label: "Listed balance",
+    short: "Money currently active in the listing flow.",
+    detail: "Listed balance has already moved out of principal and is waiting to be matched against demand.",
+  },
+  {
+    key: "soldBalance",
+    label: "Sold balance",
+    short: "Amount already matched in the marketplace flow.",
+    detail: "Sold balance shows how much listed money has already been matched. It feeds your withdrawable balance.",
+  },
+  {
+    key: "withdrawableBalance",
+    label: "Withdrawable balance",
+    short: "Matched money available to request as a payout.",
+    detail: "Withdrawable balance only includes sold and unlocked funds that are ready for a withdrawal request.",
+  },
+  {
+    key: "lockedBalance",
+    label: "Locked balance",
+    short: "Money temporarily held for a withdrawal request under review.",
+    detail: "Locked balance is reserved while a withdrawal request is pending review or provider processing.",
+  },
+];
+
+export type MoneyTimelineStepType =
+  | "deposit_paid"
+  | "reward_credited"
+  | "amount_listed"
+  | "amount_matched"
+  | "withdrawal_requested"
+  | "withdrawal_paid"
+  | "withdrawal_reversed";
+
+export type MoneyTimelineStepState = "completed" | "active" | "failed" | "pending";
+
+export interface MoneyTimelineStep {
+  id: string;
+  type: MoneyTimelineStepType;
+  title: string;
+  description: string;
+  state: MoneyTimelineStepState;
+  amount: number;
+  createdAt: string;
+  depositId?: string;
+  withdrawalId?: string;
+}
+
+export interface WithdrawalEligibilityReason {
+  code:
+    | "blocked_user"
+    | "insufficient_balance"
+    | "minimum_amount_not_met"
+    | "pending_withdrawal_limit";
+  message: string;
+}
+
+export interface WithdrawalEligibility {
+  eligible: boolean;
+  requestedAmount?: number;
+  availableAmount: number;
+  minimumAmount?: number | null;
+  pendingCount: number;
+  maxPendingWithdrawals: number;
+  reasons: WithdrawalEligibilityReason[];
+}
+
+export interface WalletOverview {
+  walletSummary: WalletSummary;
+  explainers: WalletBalanceExplainer[];
+  timeline: MoneyTimelineStep[];
+  withdrawalEligibility: WithdrawalEligibility;
+}
+
 export interface WalletTransaction {
   id: string;
   userId: string;
@@ -226,6 +329,35 @@ export interface Paginated<T> {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export type RiskLevel = "low" | "medium" | "high";
+
+export interface RiskIndicator {
+  level: RiskLevel;
+  reasons: string[];
+}
+
+export interface AdminRiskReport {
+  users: Record<string, RiskIndicator>;
+  deposits: Record<string, RiskIndicator>;
+  withdrawals: Record<string, RiskIndicator>;
+}
+
+export interface ReconciliationEntry {
+  id: string;
+  kind: "provider_paid_app_pending" | "listed_without_provider_success";
+  depositId: string;
+  userId: string;
+  amount: number;
+  status: DepositStatus;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReconciliationReport {
+  entries: ReconciliationEntry[];
 }
 
 export interface DepositProviderEvent {

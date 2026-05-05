@@ -46,10 +46,13 @@ import {
 } from "@mui/material";
 import type {
   AdminAuditLog,
+  AdminRiskReport,
   ChunkBucket,
   DemandPool,
   DepositOrder,
   Paginated,
+  ReconciliationReport,
+  RiskLevel,
   RewardRule,
   User,
   WithdrawRequest,
@@ -178,13 +181,15 @@ function App() {
   const [chunkBuckets, setChunkBuckets] = useState<ChunkBucket[]>([]);
   const [demandPools, setDemandPools] = useState<DemandPool[]>([]);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [riskReport, setRiskReport] = useState<AdminRiskReport | null>(null);
+  const [reconciliation, setReconciliation] = useState<ReconciliationReport | null>(null);
   const [matchingPaused, setMatchingPaused] = useState(false);
 
   const loadDashboard = async (token: string) => {
     setLoading(true);
     setError(null);
     try {
-      const [usersData, depositsData, withdrawalsData, rewardRulesData, chunkBucketsData, demandPoolsData, auditLogsData, providerStatusData] =
+      const [usersData, depositsData, withdrawalsData, rewardRulesData, chunkBucketsData, demandPoolsData, auditLogsData, providerStatusData, riskReportData, reconciliationData] =
         await Promise.all([
           request<Paginated<User>>("/admin/users?page=1&pageSize=50", { token }),
           request<Paginated<DepositOrder>>("/admin/deposits?page=1&pageSize=50", { token }),
@@ -194,6 +199,8 @@ function App() {
           request<DemandPool[]>("/admin/demand-pools", { token }),
           request<Paginated<AdminAuditLog>>("/admin/audit-logs?page=1&pageSize=20", { token }),
           request<ProviderStatus>("/health/providers"),
+          request<AdminRiskReport>("/admin/risk-report", { token }).catch(() => ({ users: {}, deposits: {}, withdrawals: {} })),
+          request<ReconciliationReport>("/admin/reconciliation", { token }).catch(() => ({ entries: [] })),
         ]);
 
       setUsers(usersData);
@@ -204,6 +211,8 @@ function App() {
       setDemandPools(demandPoolsData);
       setAuditLogs(auditLogsData);
       setProviderStatus(providerStatusData);
+      setRiskReport(riskReportData);
+      setReconciliation(reconciliationData);
       setMatchingPaused(false);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load dashboard");
@@ -253,6 +262,9 @@ function App() {
       setActionKey(null);
     }
   };
+
+  const riskColor = (level: RiskLevel): "success" | "warning" | "error" =>
+    level === "high" ? "error" : level === "medium" ? "warning" : "success";
 
   const sidebar = (
     <Box
@@ -720,13 +732,14 @@ function App() {
                 <TableContainer>
                   <Table>
                     <TableHead>
-                      <TableRow>
-                        <TableCell>Name</TableCell>
-                        <TableCell>Phone</TableCell>
-                        <TableCell>Role</TableCell>
-                        <TableCell>Status</TableCell>
-                        <TableCell align="right">Action</TableCell>
-                      </TableRow>
+                        <TableRow>
+                          <TableCell>Name</TableCell>
+                          <TableCell>Phone</TableCell>
+                          <TableCell>Role</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell>Risk</TableCell>
+                          <TableCell align="right">Action</TableCell>
+                        </TableRow>
                     </TableHead>
                     <TableBody>
                       {users?.items.map((user) => (
@@ -748,6 +761,20 @@ function App() {
                           <TableCell>{user.role}</TableCell>
                           <TableCell>
                             <Chip size="small" color={user.blocked ? "error" : "success"} label={user.blocked ? "Blocked" : "Active"} />
+                          </TableCell>
+                          <TableCell>
+                            <Stack spacing={0.5}>
+                              <Chip
+                                size="small"
+                                label={(riskReport?.users[user.id]?.level ?? "low").toUpperCase()}
+                                color={riskColor(riskReport?.users[user.id]?.level ?? "low")}
+                              />
+                              {(riskReport?.users[user.id]?.reasons ?? []).slice(0, 1).map((reason) => (
+                                <Typography key={reason} variant="caption" color="text.secondary">
+                                  {reason}
+                                </Typography>
+                              ))}
+                            </Stack>
                           </TableCell>
                           <TableCell align="right">
                             <Button
@@ -791,6 +818,7 @@ function App() {
                           <TableCell>User</TableCell>
                           <TableCell>Amount</TableCell>
                           <TableCell>Status</TableCell>
+                          <TableCell>Risk</TableCell>
                           <TableCell>Created</TableCell>
                           <TableCell align="right">Action</TableCell>
                         </TableRow>
@@ -804,30 +832,109 @@ function App() {
                             <TableCell>
                               <Chip size="small" label={deposit.status} color={deposit.status === "listed" ? "success" : "warning"} />
                             </TableCell>
+                            <TableCell>
+                              <Stack spacing={0.5}>
+                                <Chip
+                                  size="small"
+                                  label={(riskReport?.deposits[deposit.id]?.level ?? "low").toUpperCase()}
+                                  color={riskColor(riskReport?.deposits[deposit.id]?.level ?? "low")}
+                                />
+                                {(riskReport?.deposits[deposit.id]?.reasons ?? []).slice(0, 1).map((reason) => (
+                                  <Typography key={reason} variant="caption" color="text.secondary">
+                                    {reason}
+                                  </Typography>
+                                ))}
+                              </Stack>
+                            </TableCell>
                             <TableCell>{toDateTime(deposit.createdAt)}</TableCell>
                             <TableCell align="right">
-                              <Button
-                                variant="outlined"
-                                disabled={deposit.status === "listed" || actionKey === `deposit-${deposit.id}`}
-                                onClick={() =>
-                                  onAction(
-                                    `deposit-${deposit.id}`,
-                                    async () => {
-                                      await request(`/admin/deposits/${deposit.id}/verify`, {
-                                        method: "POST",
-                                        token: session.accessToken,
-                                      });
-                                      await loadDashboard(session.accessToken);
-                                    },
-                                    `Deposit ${deposit.id} verified.`,
-                                  )
-                                }
-                              >
-                                Verify
-                              </Button>
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button
+                                  variant="outlined"
+                                  disabled={deposit.status === "listed" || actionKey === `deposit-sync-${deposit.id}`}
+                                  onClick={() =>
+                                    onAction(
+                                      `deposit-sync-${deposit.id}`,
+                                      async () => {
+                                        await request(`/admin/deposits/${deposit.id}/sync`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `Deposit ${deposit.id} resynced.`,
+                                    )
+                                  }
+                                >
+                                  Resync
+                                </Button>
+                                <Button
+                                  variant="outlined"
+                                  disabled={deposit.status === "listed" || actionKey === `deposit-${deposit.id}`}
+                                  onClick={() =>
+                                    onAction(
+                                      `deposit-${deposit.id}`,
+                                      async () => {
+                                        await request(`/admin/deposits/${deposit.id}/verify`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `Deposit ${deposit.id} verified.`,
+                                    )
+                                  }
+                                >
+                                  Verify
+                                </Button>
+                              </Stack>
                             </TableCell>
                           </TableRow>
                         ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Reconciliation" subtitle="Orders that need a closer look before money ops drift.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Kind</TableCell>
+                          <TableCell>Deposit</TableCell>
+                          <TableCell>User</TableCell>
+                          <TableCell>Amount</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell>Note</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(reconciliation?.entries ?? []).map((entry) => (
+                          <TableRow key={entry.id} hover>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                color={entry.kind === "provider_paid_app_pending" ? "warning" : "info"}
+                                label={entry.kind === "provider_paid_app_pending" ? "Provider paid / app pending" : "Listed / provider missing"}
+                              />
+                            </TableCell>
+                            <TableCell sx={{ fontFamily: "monospace", fontSize: 13 }}>{entry.depositId}</TableCell>
+                            <TableCell>{entry.userId}</TableCell>
+                            <TableCell>{toCurrency(entry.amount)}</TableCell>
+                            <TableCell>{entry.status}</TableCell>
+                            <TableCell>{entry.note}</TableCell>
+                          </TableRow>
+                        ))}
+                        {!reconciliation?.entries.length ? (
+                          <TableRow>
+                            <td colSpan={6} style={{ padding: "14px 16px" }}>
+                              <Typography variant="body2" color="text.secondary">
+                                No reconciliation gaps detected right now.
+                              </Typography>
+                            </td>
+                          </TableRow>
+                        ) : null}
                       </TableBody>
                     </Table>
                   </TableContainer>
@@ -842,6 +949,7 @@ function App() {
                           <TableCell>User</TableCell>
                           <TableCell>Amount</TableCell>
                           <TableCell>Status</TableCell>
+                          <TableCell>Risk</TableCell>
                           <TableCell>Updated</TableCell>
                           <TableCell align="right">Actions</TableCell>
                         </TableRow>
@@ -866,6 +974,20 @@ function App() {
                                         : "info"
                                 }
                               />
+                            </TableCell>
+                            <TableCell>
+                              <Stack spacing={0.5}>
+                                <Chip
+                                  size="small"
+                                  label={(riskReport?.withdrawals[withdrawal.id]?.level ?? "low").toUpperCase()}
+                                  color={riskColor(riskReport?.withdrawals[withdrawal.id]?.level ?? "low")}
+                                />
+                                {(riskReport?.withdrawals[withdrawal.id]?.reasons ?? []).slice(0, 1).map((reason) => (
+                                  <Typography key={reason} variant="caption" color="text.secondary">
+                                    {reason}
+                                  </Typography>
+                                ))}
+                              </Stack>
                             </TableCell>
                             <TableCell>{toDateTime(withdrawal.updatedAt)}</TableCell>
                             <TableCell align="right">

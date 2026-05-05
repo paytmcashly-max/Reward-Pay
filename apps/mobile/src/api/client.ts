@@ -7,8 +7,10 @@ import type {
   ReferralSummary,
   RewardRule,
   User,
+  WalletOverview,
   WalletSummary,
   WalletTransaction,
+  WithdrawalEligibility,
   WithdrawBeneficiary,
   WithdrawRequest,
 } from "@reward-wallet/shared";
@@ -35,7 +37,15 @@ const request = async <T>(path: string, options: RequestOptions = {}): Promise<T
   });
 
   const raw = await response.text();
-  const data = raw ? (JSON.parse(raw) as unknown) : null;
+  let data: unknown = null;
+  if (raw) {
+    try {
+      data = JSON.parse(raw) as unknown;
+    } catch {
+      const snippet = raw.replace(/\s+/g, " ").slice(0, 160);
+      throw new Error(response.ok ? "Received an unexpected server response." : `Request failed with a non-JSON response: ${snippet}`);
+    }
+  }
   if (!response.ok) {
     const payload = typeof data === "object" && data ? (data as ApiError) : null;
     const message = payload?.message ?? "Request failed";
@@ -72,6 +82,9 @@ export const apiClient = {
     request<AuthSession>("/auth/invite-login", { method: "POST", body: input }),
   getMe: (token: string) => request<{ user: User; walletSummary: WalletSummary }>("/me", { token }),
   getWalletSummary: (token: string) => request<WalletSummary>("/wallet/summary", { token }),
+  getWalletOverview: (token: string) => request<WalletOverview>("/wallet/overview", { token }),
+  getWithdrawalEligibility: (token: string, amount?: number) =>
+    request<WithdrawalEligibility>(`/wallet/withdrawal-eligibility${amount !== undefined ? `?amount=${amount}` : ""}`, { token }),
   getWalletTransactions: (token: string) => request<WalletTransaction[]>("/wallet/transactions", { token }),
   listDeposits: (token: string) => request<DepositOrder[]>("/deposits", { token }),
   syncDeposit: (token: string, depositId: string) => request<DepositOrder>(`/deposits/${depositId}/sync`, { method: "POST", token }),
