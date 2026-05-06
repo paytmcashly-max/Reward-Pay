@@ -1,23 +1,16 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Link } from "expo-router";
+import { useMemo } from "react";
+import { BalanceActivityList } from "@/components/balance-activity-list";
 import { ScreenShell } from "@/components/screen-shell";
 import { SectionCard } from "@/components/section-card";
 import { useMobileStore } from "@/store/mobile-store";
 import { colors } from "@/theme/colors";
 import { typography } from "@/theme/typography";
 import { View } from "@/ui/native";
-import { Button, Divider, Text } from "@/ui/paper";
+import { Button, Text } from "@/ui/paper";
+import { buildBalanceActivity } from "@/utils/balance-activity";
 import { formatMoney } from "@/utils/money";
-
-const reasonLabels: Record<string, string> = {
-  daily_checkin: "Daily Check-in",
-  daily_task: "Daily Task",
-  milestone_reward: "Milestone Reward",
-  referral_commission: "Referral Commission",
-  deposit_bonus: "Deposit Bonus",
-  admin_adjustment: "Admin Adjustment",
-  redemption: "Redemption",
-};
 
 function MiniMetric({ label, value, helper, icon, tone }: { label: string; value: string; helper: string; icon: string; tone: string }) {
   return (
@@ -43,10 +36,14 @@ function MiniMetric({ label, value, helper, icon, tone }: { label: string; value
 }
 
 export default function WalletScreen() {
-  const { wallet, tokenBalance, tokenLedger, currentTaskPass } = useMobileStore();
+  const { wallet, tokenBalance, tokenLedger, currentTaskPass, deposits, withdrawals, transactions } = useMobileStore();
   const totalBalance = wallet.withdrawableBalance;
   const tokenToday = tokenBalance?.todayEarned ?? 0;
   const tokenCap = tokenBalance?.todayCap ?? currentTaskPass?.plan?.dailyTokenCap ?? 0;
+  const activityItems = useMemo(
+    () => buildBalanceActivity({ deposits, withdrawals, transactions, tokenLedger }),
+    [deposits, tokenLedger, transactions, withdrawals],
+  );
 
   return (
     <ScreenShell quietDecor>
@@ -135,43 +132,7 @@ export default function WalletScreen() {
       </SectionCard>
 
       <SectionCard eyebrow="Recent activity" title="Latest balance updates" subtitle="Top-ups, purchases, and reward activity appear here in one compact list.">
-        <View style={{ gap: 0 }}>
-          {tokenLedger.slice(0, 5).map((entry) => (
-            <View key={entry.id}>
-              <View style={{ paddingVertical: 7, flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <View
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: 10,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: entry.direction === "credit" ? colors.greenSoft : colors.coralSoft,
-                  }}
-                >
-                  <MaterialCommunityIcons name={entry.direction === "credit" ? "plus" : "minus"} size={14} color={entry.direction === "credit" ? colors.green : colors.coral} />
-                </View>
-                <View style={{ flex: 1, gap: 0 }}>
-                  <Text selectable style={{ ...typography.cardTitle, color: colors.ink }}>
-                    {reasonLabels[entry.reason] ?? entry.reason.replaceAll("_", " ")}
-                  </Text>
-                  <Text selectable style={{ ...typography.cardMeta, color: colors.muted }}>
-                    {new Date(entry.createdAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                  </Text>
-                </View>
-                <Text selectable style={{ ...typography.metricValue, color: entry.direction === "credit" ? colors.green : colors.coral }}>
-                  {entry.direction === "credit" ? "+" : "-"}{entry.amount}
-                </Text>
-              </View>
-              <Divider />
-            </View>
-          ))}
-          {!tokenLedger.length ? (
-            <Text selectable style={{ ...typography.cardMeta, color: colors.muted, paddingVertical: 4 }}>
-              Activity will appear after money is added, passes are purchased, or rewards are credited.
-            </Text>
-          ) : null}
-        </View>
+        <BalanceActivityList items={activityItems} limit={6} />
       </SectionCard>
     </ScreenShell>
   );

@@ -558,8 +558,8 @@ export const useMobileStore = create<MobileStore>((set, get) => {
     createDeposit: async (amount, provider = "cashfree", taskPassPlanId) => {
       set({ isSubmitting: true, errorMessage: null });
       try {
-        if (!Number.isFinite(amount) || amount < 100) {
-          throw new Error("Minimum deposit amount is Rs 100.");
+        if (!Number.isFinite(amount) || amount <= 0 || (!taskPassPlanId && amount < 100)) {
+          throw new Error(taskPassPlanId ? "Invalid Task Pass price." : "Minimum deposit amount is Rs 100.");
         }
 
         if (isDemoMode) {

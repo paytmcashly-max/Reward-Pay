@@ -1,17 +1,36 @@
 import { useMemo, useState } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { Linking } from "react-native";
+import type { DepositOrder } from "@reward-wallet/shared";
+import { ActionResultSheet } from "@/components/action-result-sheet";
 import { SectionCard } from "@/components/section-card";
 import { ScreenShell } from "@/components/screen-shell";
 import { StatusBadge } from "@/components/status-badge";
-import { runtimeConfig } from "@/config/runtime";
+import { isCashfreeNativeAvailable, startCashfreePayment } from "@/payments/cashfree-mobile";
 import { useMobileStore } from "@/store/mobile-store";
 import { colors } from "@/theme/colors";
 import { typography } from "@/theme/typography";
 import { LinearGradient } from "@/ui/gradient";
 import { View } from "@/ui/native";
 import { Button, HelperText, Text } from "@/ui/paper";
+import { getDepositStatusHint, getDepositStatusLabel, isSuccessfulDeposit } from "@/utils/deposit-status";
+import { formatMoney } from "@/utils/money";
 import { useRouter } from "expo-router";
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type PaymentSheetState = {
+  visible: boolean;
+  tone: "success" | "failed" | "warning" | "info";
+  title: string;
+  message: string;
+  details: string[];
+  actions?: Array<{
+    label: string;
+    onPress: () => void;
+    tone?: "primary" | "neutral" | "danger";
+    disabled?: boolean;
+  }>;
+};
 
 function PlanPill({ icon, label }: { icon: string; label: string }) {
   return (
@@ -56,8 +75,16 @@ function SummaryMetric({ label, value, icon, tone }: { label: string; value: str
 
 export default function TaskPassScreen() {
   const router = useRouter();
-  const { taskPassPlans, currentTaskPass, dailyOverview, createDeposit, isSubmitting, errorMessage, providerStatus } = useMobileStore();
+  const { taskPassPlans, currentTaskPass, dailyOverview, createDeposit, syncDeposit, isSubmitting, errorMessage, providerStatus } = useMobileStore();
   const [buyingPlanId, setBuyingPlanId] = useState<string | null>(null);
+  const [resultSheet, setResultSheet] = useState<PaymentSheetState>({
+    visible: false,
+    tone: "info",
+    title: "",
+    message: "",
+    details: [],
+    actions: [],
+  });
 
   const activePlan = currentTaskPass?.plan ?? null;
   const assignedCount = dailyOverview?.assignedCount ?? 0;
@@ -74,6 +101,201 @@ export default function TaskPassScreen() {
   }, [activePlan?.id, taskPassPlans]);
 
   const otherPlans = taskPassPlans.filter((plan) => plan.id !== recommendedPlan?.id);
+  const nativeCheckoutReady = isCashfreeNativeAvailable();
+  const providerEnvironment = providerStatus?.cashfree.baseUrl?.includes("sandbox") ? "sandbox" : "production";
+
+  const openReceipt = (depositId: string) =>
+    router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: depositId } });
+
+  const showPaymentOutcome = (deposit: DepositOrder, extraDetails: string[] = []) => {
+    const baseDetails = [
+      `Amount ${formatMoney(deposit.amount)}`,
+      `Status: ${getDepositStatusLabel(deposit.status)}`,
+      getDepositStatusHint(deposit.status),
+      ...extraDetails,
+    ];
+
+    if (isSuccessfulDeposit(deposit.status)) {
+      setResultSheet({
+        visible: true,
+        tone: "success",
+        title: "Task Pass payment successful",
+        message: "Payment was verified and your Task Pass state has been refreshed.",
+        details: baseDetails,
+        actions: [
+          { label: "View receipt", tone: "primary", onPress: () => openReceipt(deposit.id) },
+          { label: "Close", onPress: () => setResultSheet((state) => ({ ...state, visible: false })) },
+        ],
+      });
+      return;
+    }
+
+    if (deposit.status === "failed") {
+      setResultSheet({
+        visible: true,
+        tone: "failed",
+        title: "Payment failed",
+        message: "Cashfree could not confirm this Task Pass payment.",
+        details: baseDetails,
+        actions: [
+          { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+          { label: "Close", tone: "primary", onPress: () => setResultSheet((state) => ({ ...state, visible: false })) },
+        ],
+      });
+      return;
+    }
+
+    if (deposit.status === "cancelled") {
+      setResultSheet({
+        visible: true,
+        tone: "warning",
+        title: "Checkout closed",
+        message: "Payment was cancelled before completion.",
+        details: baseDetails,
+        actions: [
+          { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+          { label: "Close", tone: "primary", onPress: () => setResultSheet((state) => ({ ...state, visible: false })) },
+        ],
+      });
+      return;
+    }
+
+    setResultSheet({
+      visible: true,
+      tone: "info",
+      title: "Payment pending",
+      message: "Cashfree is still confirming this payment.",
+      details: baseDetails,
+      actions: [
+        { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+        {
+          label: "Sync now",
+          tone: "primary",
+          onPress: () => void syncDeposit(deposit.id).then((synced) => synced && showPaymentOutcome(synced)),
+        },
+      ],
+    });
+  };
+
+  const settleDepositStatus = async (depositId: string) => {
+    const delays = [0, 1200, 2500, 4500];
+    let latest: DepositOrder | null = null;
+    for (const delay of delays) {
+      if (delay) await wait(delay);
+      latest = await syncDeposit(depositId);
+      if (!latest) break;
+      if (isSuccessfulDeposit(latest.status) || latest.status === "failed" || latest.status === "cancelled") {
+        return latest;
+      }
+    }
+    return latest;
+  };
+
+  const launchTaskPassCheckout = async (deposit: DepositOrder) => {
+    if (deposit.provider !== "cashfree") {
+      showPaymentOutcome(deposit);
+      return;
+    }
+
+    if (!deposit.checkoutSession?.paymentSessionId || !deposit.providerOrderId) {
+      setResultSheet({
+        visible: true,
+        tone: "failed",
+        title: "Checkout unavailable",
+        message: "This order is missing its Cashfree payment session.",
+        details: [`Order ID: ${deposit.providerOrderId ?? deposit.id}`],
+        actions: [{ label: "View receipt", tone: "primary", onPress: () => openReceipt(deposit.id) }],
+      });
+      return;
+    }
+
+    if (!nativeCheckoutReady) {
+      setResultSheet({
+        visible: true,
+        tone: "failed",
+        title: "In-app checkout unavailable",
+        message: "This APK does not have the native Cashfree checkout module available.",
+        details: ["Install the latest generated APK build and try buying the Task Pass again."],
+        actions: [{ label: "View receipt", tone: "primary", onPress: () => openReceipt(deposit.id) }],
+      });
+      return;
+    }
+
+    try {
+      const outcome = await startCashfreePayment({
+        paymentSessionId: deposit.checkoutSession.paymentSessionId,
+        orderId: deposit.providerOrderId,
+        environment: providerEnvironment,
+      });
+
+      if (outcome.kind === "failed") {
+        const synced = await syncDeposit(deposit.id);
+        if (synced && (synced.status === "failed" || synced.status === "cancelled" || isSuccessfulDeposit(synced.status))) {
+          showPaymentOutcome(synced, [outcome.message]);
+          return;
+        }
+        setResultSheet({
+          visible: true,
+          tone: "failed",
+          title: "Payment failed",
+          message: "Cashfree returned a failed payment response.",
+          details: [outcome.message, `Order ID: ${outcome.orderId}`],
+          actions: [
+            { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+            { label: "Close", tone: "primary", onPress: () => setResultSheet((state) => ({ ...state, visible: false })) },
+          ],
+        });
+        return;
+      }
+
+      if (outcome.kind === "cancelled" || outcome.kind === "dropped") {
+        const synced = await syncDeposit(deposit.id);
+        if (synced && (synced.status === "failed" || synced.status === "cancelled" || isSuccessfulDeposit(synced.status))) {
+          showPaymentOutcome(synced, [outcome.message]);
+          return;
+        }
+        setResultSheet({
+          visible: true,
+          tone: "warning",
+          title: "Checkout closed",
+          message: "Payment did not complete.",
+          details: [outcome.message, `Order ID: ${outcome.orderId}`],
+          actions: [
+            { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+            { label: "Close", tone: "primary", onPress: () => setResultSheet((state) => ({ ...state, visible: false })) },
+          ],
+        });
+        return;
+      }
+
+      const synced = await settleDepositStatus(deposit.id);
+      if (synced) {
+        showPaymentOutcome(synced, [outcome.message]);
+        return;
+      }
+
+      setResultSheet({
+        visible: true,
+        tone: "info",
+        title: "Payment submitted",
+        message: "Cashfree received your payment attempt.",
+        details: [outcome.message, "Tap Sync on the receipt if the final status is not visible yet."],
+        actions: [
+          { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+          { label: "Sync now", tone: "primary", onPress: () => void syncDeposit(deposit.id).then((latest) => latest && showPaymentOutcome(latest)) },
+        ],
+      });
+    } catch (error) {
+      setResultSheet({
+        visible: true,
+        tone: "failed",
+        title: "Checkout unavailable",
+        message: "Unable to start Cashfree checkout right now.",
+        details: [error instanceof Error ? error.message : "Unknown Cashfree launch error."],
+        actions: [{ label: "Close", tone: "primary", onPress: () => setResultSheet((state) => ({ ...state, visible: false })) }],
+      });
+    }
+  };
 
   const handleBuy = async (planId: string, amount: number) => {
     const provider = providerStatus?.cashfree.paymentsLive ? "cashfree" : "mock";
@@ -83,13 +305,7 @@ export default function TaskPassScreen() {
       if (!deposit) {
         return;
       }
-
-      if (provider === "cashfree" && deposit.checkoutSession?.paymentSessionId) {
-        await Linking.openURL(`${runtimeConfig.apiBaseUrl}/checkout/cashfree/${deposit.id}`);
-        return;
-      }
-
-      router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: deposit.id } });
+      await launchTaskPassCheckout(deposit);
     } finally {
       setBuyingPlanId(null);
     }
@@ -97,6 +313,15 @@ export default function TaskPassScreen() {
 
   return (
     <ScreenShell quietDecor>
+      <ActionResultSheet
+        visible={resultSheet.visible}
+        onDismiss={() => setResultSheet((state) => ({ ...state, visible: false }))}
+        tone={resultSheet.tone}
+        title={resultSheet.title}
+        message={resultSheet.message}
+        details={resultSheet.details}
+        actions={resultSheet.actions}
+      />
       <SectionCard
         eyebrow="Current Pass"
         title={activePlan ? "Current pass" : "No active Task Pass"}

@@ -1,5 +1,7 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Link } from "expo-router";
+import { useMemo } from "react";
+import { BalanceActivityList } from "@/components/balance-activity-list";
 import { SectionCard } from "@/components/section-card";
 import { ScreenShell } from "@/components/screen-shell";
 import { useMobileStore } from "@/store/mobile-store";
@@ -7,19 +9,11 @@ import { colors } from "@/theme/colors";
 import { typography } from "@/theme/typography";
 import { LinearGradient } from "@/ui/gradient";
 import { View } from "@/ui/native";
-import { Button, Divider, Text } from "@/ui/paper";
+import { Button, Text } from "@/ui/paper";
+import { buildBalanceActivity } from "@/utils/balance-activity";
 import { formatMoney } from "@/utils/money";
 
 const claimedStatuses = new Set(["claimed"]);
-const reasonLabels: Record<string, string> = {
-  daily_checkin: "Daily Check-in",
-  daily_task: "Daily Task",
-  milestone_reward: "Milestone Reward",
-  referral_commission: "Referral Commission",
-  deposit_bonus: "Deposit Bonus",
-  admin_adjustment: "Admin Adjustment",
-  redemption: "Redemption",
-};
 
 function ProgressBar({ value, color = colors.green }: { value: number; color?: string }) {
   return (
@@ -50,9 +44,13 @@ function HeroMetric({ label, value, icon, tone }: { label: string; value: string
 }
 
 export default function HomeScreen() {
-  const { user, wallet, dailyOverview, dailyTasks, tokenBalance, tokenLedger, claimDailyCheckIn, currentTaskPass, isSubmitting } = useMobileStore();
+  const { user, wallet, dailyOverview, dailyTasks, tokenBalance, tokenLedger, deposits, withdrawals, transactions, claimDailyCheckIn, currentTaskPass, isSubmitting } = useMobileStore();
 
   const activePlan = currentTaskPass?.plan ?? dailyOverview?.activePlan ?? null;
+  const activityItems = useMemo(
+    () => buildBalanceActivity({ deposits, withdrawals, transactions, tokenLedger }),
+    [deposits, tokenLedger, transactions, withdrawals],
+  );
   const balance = dailyOverview?.tokenBalance ?? tokenBalance;
   const assignedCount = dailyOverview?.assignedCount ?? dailyTasks.length;
   const completedCount = dailyOverview?.completedCount ?? dailyTasks.filter((item) => claimedStatuses.has(item.assignment.status)).length;
@@ -173,34 +171,13 @@ export default function HomeScreen() {
       </View>
 
       <SectionCard eyebrow="Recent activity" title="Latest balance updates" subtitle="Recent top-ups, task rewards, and deductions.">
-        <View style={{ gap: 0 }}>
-          {tokenLedger.slice(0, 3).map((entry) => (
-            <View key={entry.id}>
-              <View style={{ paddingVertical: 7, flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <View style={{ width: 28, height: 28, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: entry.direction === "credit" ? colors.greenSoft : colors.coralSoft }}>
-                  <MaterialCommunityIcons name={entry.direction === "credit" ? "plus" : "minus"} size={14} color={entry.direction === "credit" ? colors.green : colors.coral} />
-                </View>
-                <View style={{ flex: 1, gap: 0 }}>
-                  <Text selectable style={{ ...typography.cardTitle, color: colors.ink }}>
-                    {reasonLabels[entry.reason] ?? entry.reason.replaceAll("_", " ")}
-                  </Text>
-                  <Text selectable style={{ ...typography.cardMeta, color: colors.muted }}>
-                    {new Date(entry.createdAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                  </Text>
-                </View>
-                <Text selectable style={{ ...typography.metricValue, color: entry.direction === "credit" ? colors.green : colors.coral }}>
-                  {entry.direction === "credit" ? "+" : "-"}{entry.amount}
-                </Text>
-              </View>
-              <Divider />
-            </View>
-          ))}
-          {!tokenLedger.length ? (
-            <Text selectable style={{ ...typography.cardMeta, color: colors.muted }}>
-              Balance activity will appear after deposits, check-ins, and task claims.
-            </Text>
-          ) : null}
-          <Link href="/tokens" asChild>
+        <View style={{ gap: 8 }}>
+          <BalanceActivityList
+            items={activityItems}
+            limit={4}
+            emptyMessage="Balance activity will appear after deposits, pass purchases, check-ins, and task claims."
+          />
+          <Link href="/transactions" asChild>
             <Button mode="text" contentStyle={{ minHeight: 30 }}>
               Open activity
             </Button>
