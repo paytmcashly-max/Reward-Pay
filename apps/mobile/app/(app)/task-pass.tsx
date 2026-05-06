@@ -5,12 +5,13 @@ import { ActionResultSheet } from "@/components/action-result-sheet";
 import { SectionCard } from "@/components/section-card";
 import { ScreenShell } from "@/components/screen-shell";
 import { StatusBadge } from "@/components/status-badge";
-import { isCashfreeNativeAvailable, startCashfreePayment } from "@/payments/cashfree-mobile";
+import { isCashfreeNativeAvailable, isCashfreeTrustedSourceError, startCashfreePayment } from "@/payments/cashfree-mobile";
+import { runtimeConfig } from "@/config/runtime";
 import { useMobileStore } from "@/store/mobile-store";
 import { colors } from "@/theme/colors";
 import { typography } from "@/theme/typography";
 import { LinearGradient } from "@/ui/gradient";
-import { View } from "@/ui/native";
+import { Alert, Linking, View } from "@/ui/native";
 import { Button, HelperText, Text } from "@/ui/paper";
 import { getDepositStatusHint, getDepositStatusLabel, isSuccessfulDeposit } from "@/utils/deposit-status";
 import { formatMoney } from "@/utils/money";
@@ -107,6 +108,14 @@ export default function TaskPassScreen() {
   const openReceipt = (depositId: string) => {
     setResultSheet((state) => ({ ...state, visible: false }));
     router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: depositId } });
+  };
+
+  const openWebCheckout = async (depositId: string) => {
+    if (!runtimeConfig.apiBaseUrl) {
+      Alert.alert("Checkout unavailable", "API URL is not configured.");
+      return;
+    }
+    await Linking.openURL(`${runtimeConfig.apiBaseUrl}/checkout/cashfree/${depositId}`);
   };
 
   const showPaymentOutcome = (deposit: DepositOrder, extraDetails: string[] = []) => {
@@ -231,6 +240,24 @@ export default function TaskPassScreen() {
       });
 
       if (outcome.kind === "failed") {
+        if (isCashfreeTrustedSourceError(outcome.message)) {
+          setResultSheet({
+            visible: true,
+            tone: "warning",
+            title: "Trusted install required",
+            message: "Cashfree blocked native checkout because this APK was not installed from a trusted store.",
+            details: [
+              "Production users must install RewardPay from Play Store or another Cashfree-approved store.",
+              "For this sideloaded test APK, open web checkout and then return to sync the receipt.",
+              "If web checkout shows a Cashfree broken-link page, whitelist the API domain and Android package in Cashfree first.",
+            ],
+            actions: [
+              { label: "Open web checkout", tone: "primary", onPress: () => void openWebCheckout(deposit.id) },
+              { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+            ],
+          });
+          return;
+        }
         const synced = await syncDeposit(deposit.id);
         if (synced && (synced.status === "failed" || synced.status === "cancelled" || isSuccessfulDeposit(synced.status))) {
           showPaymentOutcome(synced, [outcome.message]);

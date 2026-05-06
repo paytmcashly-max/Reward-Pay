@@ -5,12 +5,12 @@ import type { DepositOrder } from "@reward-wallet/shared";
 import { ActionResultSheet } from "@/components/action-result-sheet";
 import { ScreenShell } from "@/components/screen-shell";
 import { StatusBadge } from "@/components/status-badge";
-import { isCashfreeNativeAvailable, startCashfreePayment } from "@/payments/cashfree-mobile";
-import { allowTestPayments } from "@/config/runtime";
+import { isCashfreeNativeAvailable, isCashfreeTrustedSourceError, startCashfreePayment } from "@/payments/cashfree-mobile";
+import { allowTestPayments, runtimeConfig } from "@/config/runtime";
 import { useMobileStore } from "@/store/mobile-store";
 import { colors } from "@/theme/colors";
 import { fontFamily, typography } from "@/theme/typography";
-import { Alert, View } from "@/ui/native";
+import { Alert, Linking, View } from "@/ui/native";
 import { Banner, Button, Card, Chip, HelperText, Surface, Text, TextInput } from "@/ui/paper";
 import { canRepayDeposit, getDepositStatusHint, getDepositStatusLabel, getDepositStatusTone, isSuccessfulDeposit } from "@/utils/deposit-status";
 import { formatMoney, formatTimeLabel } from "@/utils/money";
@@ -65,6 +65,14 @@ export default function DepositScreen() {
   const openReceipt = (depositId: string) => {
     setResultSheet((state) => ({ ...state, visible: false }));
     router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: depositId } });
+  };
+
+  const openWebCheckout = async (depositId: string) => {
+    if (!runtimeConfig.apiBaseUrl) {
+      Alert.alert("Checkout unavailable", "API URL is not configured.");
+      return;
+    }
+    await Linking.openURL(`${runtimeConfig.apiBaseUrl}/checkout/cashfree/${depositId}`);
   };
 
   const showDepositOutcome = (deposit: DepositOrder) => {
@@ -145,6 +153,24 @@ export default function DepositScreen() {
         environment: providerEnvironment,
       });
       if (outcome.kind === "failed") {
+        if (isCashfreeTrustedSourceError(outcome.message)) {
+          setResultSheet({
+            visible: true,
+            tone: "warning",
+            title: "Trusted install required",
+            message: "Cashfree blocked native checkout because this APK was not installed from a trusted store.",
+            details: [
+              "For production users, install the app from Play Store or an approved Cashfree source.",
+              "For this test build, use web checkout and then return to sync the receipt.",
+              "If web checkout shows a Cashfree broken-link page, whitelist the API domain and Android package in Cashfree first.",
+            ],
+            actions: [
+              { label: "Open web checkout", tone: "primary", onPress: () => void openWebCheckout(deposit.id) },
+              { label: "View receipt", onPress: () => openReceipt(deposit.id) },
+            ],
+          });
+          return;
+        }
         setResultSheet({
           visible: true,
           tone: "failed",

@@ -21,7 +21,7 @@ import {
   canSyncDepositFromStatus,
   type TransactionDetailSource,
 } from "@/utils/transaction-detail";
-import { isCashfreeNativeAvailable, startCashfreePayment } from "@/payments/cashfree-mobile";
+import { isCashfreeNativeAvailable, isCashfreeTrustedSourceError, startCashfreePayment } from "@/payments/cashfree-mobile";
 import { isSuccessfulDeposit } from "@/utils/deposit-status";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -279,6 +279,14 @@ export default function TransactionDetailsScreen() {
       });
 
       if (outcome.kind === "failed") {
+        if (isCashfreeTrustedSourceError(outcome.message)) {
+          openResult("warning", "Trusted install required", "Cashfree blocked native checkout for this sideloaded APK.", [
+            "Install the production app from Play Store or another Cashfree-approved store.",
+            "For web checkout, the API domain and Android package must be whitelisted in the Cashfree merchant dashboard.",
+            outcome.message,
+          ]);
+          return;
+        }
         openResult("failed", "Payment failed", "Cashfree could not complete this payment.", [outcome.message]);
         return;
       }

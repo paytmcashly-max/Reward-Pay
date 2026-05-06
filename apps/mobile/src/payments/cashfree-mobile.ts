@@ -58,6 +58,11 @@ const getCashfreeRuntime = (): CashfreeRuntime | null => {
 
 export const isCashfreeNativeAvailable = () => Boolean(getCashfreeRuntime());
 
+export const isCashfreeTrustedSourceError = (message: string) => {
+  const normalized = message.toUpperCase();
+  return normalized.includes("NOT_AVAILABLE") && normalized.includes("TRUSTED SOURCE");
+};
+
 const classifyCashfreeError = (
   input: StartCashfreePaymentInput,
   error?: { getMessage?: () => string; getCode?: () => string; getStatus?: () => string },
