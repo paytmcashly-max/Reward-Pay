@@ -1,14 +1,17 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Linking } from "react-native";
 import { SectionCard } from "@/components/section-card";
 import { ScreenShell } from "@/components/screen-shell";
 import { StatusBadge } from "@/components/status-badge";
+import { runtimeConfig } from "@/config/runtime";
 import { useMobileStore } from "@/store/mobile-store";
 import { colors } from "@/theme/colors";
 import { typography } from "@/theme/typography";
 import { LinearGradient } from "@/ui/gradient";
 import { View } from "@/ui/native";
 import { Button, HelperText, Text } from "@/ui/paper";
+import { useRouter } from "expo-router";
 
 function PlanPill({ icon, label }: { icon: string; label: string }) {
   return (
@@ -52,7 +55,9 @@ function SummaryMetric({ label, value, icon, tone }: { label: string; value: str
 }
 
 export default function TaskPassScreen() {
+  const router = useRouter();
   const { taskPassPlans, currentTaskPass, dailyOverview, createDeposit, isSubmitting, errorMessage, providerStatus } = useMobileStore();
+  const [buyingPlanId, setBuyingPlanId] = useState<string | null>(null);
 
   const activePlan = currentTaskPass?.plan ?? null;
   const assignedCount = dailyOverview?.assignedCount ?? 0;
@@ -70,9 +75,24 @@ export default function TaskPassScreen() {
 
   const otherPlans = taskPassPlans.filter((plan) => plan.id !== recommendedPlan?.id);
 
-  const handleBuy = (planId: string, amount: number) => {
+  const handleBuy = async (planId: string, amount: number) => {
     const provider = providerStatus?.cashfree.paymentsLive ? "cashfree" : "mock";
-    void createDeposit(amount, provider, planId);
+    setBuyingPlanId(planId);
+    try {
+      const deposit = await createDeposit(amount, provider, planId);
+      if (!deposit) {
+        return;
+      }
+
+      if (provider === "cashfree" && deposit.checkoutSession?.paymentSessionId) {
+        await Linking.openURL(`${runtimeConfig.apiBaseUrl}/checkout/cashfree/${deposit.id}`);
+        return;
+      }
+
+      router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: deposit.id } });
+    } finally {
+      setBuyingPlanId(null);
+    }
   };
 
   return (
@@ -162,8 +182,8 @@ export default function TaskPassScreen() {
                 mode="contained"
                 style={{ borderRadius: 14 }}
                 contentStyle={{ minHeight: 40 }}
-                loading={isSubmitting}
-                disabled={isSubmitting}
+                loading={isSubmitting && buyingPlanId === recommendedPlan.id}
+                disabled={isSubmitting || Boolean(buyingPlanId)}
                 onPress={() => handleBuy(recommendedPlan.id, recommendedPlan.priceAmount)}
               >
                 {`Buy ${recommendedPlan.name}`}
@@ -217,8 +237,8 @@ export default function TaskPassScreen() {
                 mode={plan.id === activePlan?.id ? "contained-tonal" : "outlined"}
                 style={{ borderRadius: 14 }}
                 contentStyle={{ minHeight: 36 }}
-                loading={isSubmitting && plan.id !== activePlan?.id}
-                disabled={isSubmitting || plan.id === activePlan?.id}
+                loading={isSubmitting && buyingPlanId === plan.id}
+                disabled={isSubmitting || Boolean(buyingPlanId) || plan.id === activePlan?.id}
                 onPress={() => handleBuy(plan.id, plan.priceAmount)}
               >
                 {plan.id === activePlan?.id ? `${plan.name} active` : `Buy ${plan.name}`}
