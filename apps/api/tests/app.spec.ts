@@ -21,6 +21,34 @@ const createTestApp = (env: Record<string, string> = {}) => {
 };
 
 describe("api flow", () => {
+  it("serves public whitelisting policy and pricing pages", async () => {
+    const app = createTestApp({
+      TASK_PASS_ENABLED: "true",
+    });
+
+    const pricing = await request(app).get("/pricing");
+    expect(pricing.status).toBe(200);
+    expect(pricing.text).toContain("Task Pass Pricing");
+    expect(pricing.text).toContain("Growth Pass");
+    expect(pricing.text).toContain("Rs 149");
+    expect(pricing.text).toContain("Refunds & Cancellations");
+
+    const contact = await request(app).get("/contact");
+    expect(contact.status).toBe(200);
+    expect(contact.text).toContain("Contact Us");
+    expect(contact.text).toContain("support@rewardpay.app");
+
+    const terms = await request(app).get("/terms");
+    expect(terms.status).toBe(200);
+    expect(terms.text).toContain("Terms & Conditions");
+    expect(terms.text).toContain("Rewards depend on task completion and approval");
+
+    const refunds = await request(app).get("/refunds");
+    expect(refunds.status).toBe(200);
+    expect(refunds.text).toContain("Refunds & Cancellations");
+    expect(refunds.text).toContain("Duplicate successful payments");
+  });
+
   it("supports otp, token auth, and wallet summary", async () => {
     const app = createTestApp();
     const sendOtp = await request(app).post("/auth/send-otp").send({ phone: "9000000002" });

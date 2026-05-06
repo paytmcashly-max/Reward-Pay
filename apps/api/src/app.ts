@@ -222,6 +222,13 @@ const paginate = <T>(items: T[], page: number, pageSize: number): Paginated<T> =
 
 const routeParam = (value: string | string[]) => (Array.isArray(value) ? value[0] : value);
 
+const defaultTaskPassPlans = [
+  { name: "Starter Pass", durationDays: 7, dailyTaskMin: 2, dailyTaskMax: 3, dailyTokenCap: 60, targetTokens: 300, priceAmount: 49, currency: "INR" },
+  { name: "Growth Pass", durationDays: 12, dailyTaskMin: 3, dailyTaskMax: 5, dailyTokenCap: 100, targetTokens: 500, priceAmount: 149, currency: "INR" },
+  { name: "Plus Pass", durationDays: 21, dailyTaskMin: 4, dailyTaskMax: 6, dailyTokenCap: 160, targetTokens: 1000, priceAmount: 349, currency: "INR" },
+  { name: "Pro Pass", durationDays: 30, dailyTaskMin: 5, dailyTaskMax: 8, dailyTokenCap: 250, targetTokens: 2000, priceAmount: 599, currency: "INR" },
+];
+
 export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => {
   const app = express();
   app.use(cors());
@@ -403,6 +410,173 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
   </body>
 </html>`;
 
+  const getPublicTaskPassPlans = () => {
+    try {
+      return engine.listTaskPassPlans().filter((plan) => plan.active);
+    } catch {
+      return defaultTaskPassPlans;
+    }
+  };
+
+  const renderPublicPage = (options: { title: string; eyebrow: string; description: string; body: string }) => `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${options.title} | RewardPay</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, Arial, sans-serif;
+        color: #132033;
+        background: #f6f8fb;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(34, 197, 94, 0.12), transparent 34%),
+          linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
+      }
+      header, main, footer {
+        width: min(100% - 32px, 920px);
+        margin: 0 auto;
+      }
+      header {
+        padding: 30px 0 18px;
+      }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: #0f172a;
+        font-weight: 800;
+        font-size: 20px;
+        text-decoration: none;
+      }
+      .logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        background: #16a34a;
+        color: #ffffff;
+        font-weight: 900;
+      }
+      .hero, .card {
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid #e2e8f0;
+        border-radius: 24px;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+      }
+      .hero {
+        padding: 30px;
+        margin-bottom: 18px;
+      }
+      .eyebrow {
+        margin: 0 0 10px;
+        color: #16a34a;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(30px, 6vw, 48px);
+        line-height: 1.02;
+        letter-spacing: -1.2px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 22px;
+      }
+      p, li {
+        color: #64748b;
+        line-height: 1.65;
+        font-size: 16px;
+      }
+      .lead {
+        margin: 14px 0 0;
+        max-width: 720px;
+        font-size: 18px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }
+      .card {
+        padding: 22px;
+        margin-bottom: 14px;
+      }
+      .plan {
+        border-radius: 20px;
+        border: 1px solid #e2e8f0;
+        padding: 18px;
+        background: #ffffff;
+      }
+      .price {
+        color: #0f172a;
+        font-size: 28px;
+        font-weight: 900;
+        margin: 8px 0;
+      }
+      .pill {
+        display: inline-flex;
+        border-radius: 999px;
+        background: #dcfce7;
+        color: #15803d;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 800;
+        margin: 4px 6px 0 0;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      nav a {
+        color: #2563eb;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      footer {
+        padding: 18px 0 34px;
+        color: #64748b;
+        font-size: 13px;
+      }
+      @media (max-width: 560px) {
+        .hero, .card { padding: 20px; border-radius: 20px; }
+        header { padding-top: 22px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/pricing"><span class="logo">R</span><span>RewardPay</span></a>
+      <nav aria-label="Policy navigation">
+        <a href="/pricing">Pricing</a>
+        <a href="/contact">Contact Us</a>
+        <a href="/terms">Terms & Conditions</a>
+        <a href="/refunds">Refunds & Cancellations</a>
+      </nav>
+    </header>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">${options.eyebrow}</p>
+        <h1>${options.title}</h1>
+        <p class="lead">${options.description}</p>
+      </section>
+      ${options.body}
+    </main>
+    <footer>RewardPay is a Task Pass rewards platform. Rewards depend on task completion and approval.</footer>
+  </body>
+</html>`;
+
   const getUserId = (req: express.Request) => {
     const authHeader = req.header("authorization");
     if (authHeader?.startsWith("Bearer ")) {
@@ -463,6 +637,111 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
 
   app.get("/health/providers", (_req, res) => {
     res.json(engine.getProviderStatus());
+  });
+
+  app.get(["/", "/policies"], (_req, res) => {
+    res.redirect(302, "/pricing");
+  });
+
+  app.get("/pricing", (_req, res) => {
+    const plans = getPublicTaskPassPlans();
+    const planCards = plans
+      .map(
+        (plan) => `<article class="plan">
+          <h2>${plan.name}</h2>
+          <div class="price">Rs ${plan.priceAmount}</div>
+          <p>${plan.durationDays} days. Complete ${plan.dailyTaskMin}-${plan.dailyTaskMax} daily tasks to earn tokens.</p>
+          <span class="pill">Daily cap ${plan.dailyTokenCap} tokens</span>
+          <span class="pill">Earn up to ${plan.targetTokens} tokens</span>
+          <span class="pill">${plan.currency}</span>
+        </article>`,
+      )
+      .join("");
+
+    res.type("html").send(
+      renderPublicPage({
+        title: "Task Pass Pricing",
+        eyebrow: "Products and services",
+        description:
+          "RewardPay offers Task Pass plans in INR. Users can purchase a pass, complete daily tasks, and earn tokens based on task completion and approval.",
+        body: `<section class="card">
+          <h2>Available Task Pass plans</h2>
+          <p>Task Pass purchase unlocks daily task access for the selected duration. Pricing is one-time for each pass cycle.</p>
+          <div class="grid">${planCards}</div>
+        </section>`,
+      }),
+    );
+  });
+
+  app.get("/contact", (_req, res) => {
+    res.type("html").send(
+      renderPublicPage({
+        title: "Contact Us",
+        eyebrow: "Support",
+        description: "For payment, Task Pass, account, or redemption support, contact the RewardPay support team.",
+        body: `<section class="card">
+          <h2>Support details</h2>
+          <p>Email: support@rewardpay.app</p>
+          <p>Business hours: Monday to Saturday, 10:00 AM to 6:00 PM IST.</p>
+          <p>Please include your registered phone number, order ID, and a short description of the issue when contacting support.</p>
+        </section>`,
+      }),
+    );
+  });
+
+  app.get("/terms", (_req, res) => {
+    res.type("html").send(
+      renderPublicPage({
+        title: "Terms & Conditions",
+        eyebrow: "User agreement",
+        description: "These terms explain the basic rules for using RewardPay Task Pass, daily tasks, token rewards, and redemption requests.",
+        body: `<section class="card">
+          <h2>Platform usage</h2>
+          <ul>
+            <li>Users must provide accurate account and payment details.</li>
+            <li>Task Pass access is valid only for the duration shown at purchase.</li>
+            <li>Tokens are credited only after eligible task completion, check-in, milestone, referral, or bonus events.</li>
+            <li>Rewards depend on task completion and approval. Rejected or fraudulent activity may not receive tokens.</li>
+            <li>RewardPay may block accounts that abuse referrals, payments, tasks, or redemption requests.</li>
+          </ul>
+        </section>
+        <section class="card">
+          <h2>Payments and redemptions</h2>
+          <ul>
+            <li>Task Pass prices are listed in Indian Rupees (INR).</li>
+            <li>Payment confirmation depends on the payment provider and webhook verification.</li>
+            <li>Redemption requests are reviewed before payout and may require valid account details.</li>
+          </ul>
+        </section>`,
+      }),
+    );
+  });
+
+  app.get(["/refunds", "/refunds-cancellations"], (_req, res) => {
+    res.type("html").send(
+      renderPublicPage({
+        title: "Refunds & Cancellations",
+        eyebrow: "Payment policy",
+        description: "This policy explains how RewardPay handles Task Pass cancellations, failed payments, duplicate payments, and refund requests.",
+        body: `<section class="card">
+          <h2>Refund policy</h2>
+          <ul>
+            <li>Failed or unconfirmed payments are not treated as successful Task Pass purchases.</li>
+            <li>Duplicate successful payments can be reviewed by support after the user shares the order ID.</li>
+            <li>Refund eligibility depends on payment status, Task Pass activation state, and platform review.</li>
+            <li>Approved refunds are processed back to the original payment method where supported by the payment provider.</li>
+          </ul>
+        </section>
+        <section class="card">
+          <h2>Cancellation policy</h2>
+          <ul>
+            <li>Pending payment orders may be cancelled before provider confirmation.</li>
+            <li>Activated Task Passes are generally not cancellable after daily task access has started.</li>
+            <li>Users can contact support for payment-status disputes or accidental duplicate purchases.</li>
+          </ul>
+        </section>`,
+      }),
+    );
   });
 
   app.post(
