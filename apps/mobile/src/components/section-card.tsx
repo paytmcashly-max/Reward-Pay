@@ -15,12 +15,12 @@ export function SectionCard({ eyebrow, title, subtitle, children }: SectionCardP
     <Card
       mode="elevated"
       style={{
-        borderRadius: 22,
+        borderRadius: 20,
         borderCurve: "continuous",
         backgroundColor: "#ffffffee",
       }}
     >
-      <Card.Content style={{ gap: 8, paddingHorizontal: 10, paddingVertical: 10 }}>
+      <Card.Content style={{ gap: 7, paddingHorizontal: 9, paddingVertical: 9 }}>
         {eyebrow ? (
           <Text selectable variant="labelMedium" style={{ ...typography.eyebrow, color: colors.blue }}>
             {eyebrow.toUpperCase()}

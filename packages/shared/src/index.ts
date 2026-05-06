@@ -23,6 +23,7 @@ export type WithdrawalStatus =
 export type WalletTransactionType =
   | "deposit_principal"
   | "reward_credit"
+  | "task_pass_purchase"
   | "chunk_listed"
   | "chunk_match"
   | "withdraw_request"
@@ -80,31 +81,31 @@ export const walletBalanceExplainers: WalletBalanceExplainer[] = [
     key: "principalBalance",
     label: "Principal balance",
     short: "Money you added that is still available in your wallet.",
-    detail: "Principal balance is your own money before it is listed or used in any play or payout flow.",
+    detail: "Principal balance is your own cash wallet money before any payout request.",
   },
   {
     key: "rewardBalance",
     label: "Reward balance",
-    short: "Bonus or promo value credited by rewards and referrals.",
-    detail: "Reward balance comes from reward slabs, referrals, or game outcomes. It is tracked separately from principal.",
+    short: "Legacy cash reward value kept for compatibility.",
+    detail: "New Task Pass rewards are tracked in the token wallet ledger, separate from cash.",
   },
   {
     key: "listedBalance",
-    label: "Listed balance",
-    short: "Money currently active in the listing flow.",
-    detail: "Listed balance has already moved out of principal and is waiting to be matched against demand.",
+    label: "Legacy listed balance",
+    short: "Legacy marketplace field kept only for compatibility.",
+    detail: "Listed balance is no longer part of the active product flow and should remain zero in the Task Pass model.",
   },
   {
     key: "soldBalance",
-    label: "Sold balance",
-    short: "Amount already matched in the marketplace flow.",
-    detail: "Sold balance shows how much listed money has already been matched. It feeds your withdrawable balance.",
+    label: "Legacy compatibility balance",
+    short: "Legacy marketplace field kept only for compatibility.",
+    detail: "This compatibility value is no longer part of the active Task Pass product flow.",
   },
   {
     key: "withdrawableBalance",
     label: "Withdrawable balance",
-    short: "Matched money available to request as a payout.",
-    detail: "Withdrawable balance only includes sold and unlocked funds that are ready for a withdrawal request.",
+    short: "Cash wallet amount currently available for payout.",
+    detail: "Withdrawable balance is the cash amount available for payout after any pending cash withdrawal locks are applied.",
   },
   {
     key: "lockedBalance",
@@ -195,6 +196,7 @@ export interface DepositOrder {
   userId: string;
   amount: number;
   provider: string;
+  taskPassPlanId?: string;
   status: DepositStatus;
   checkoutUrl: string;
   providerOrderId?: string;
@@ -265,13 +267,6 @@ export interface WithdrawRequest {
   providerStatus?: PayoutTransferStatus["status"];
   createdAt: string;
   updatedAt: string;
-}
-
-export interface ReferralSummary {
-  code: string;
-  totalReferredUsers: number;
-  rewardedReferrals: number;
-  totalRewardAmount: number;
 }
 
 export interface GameDefinition {
@@ -367,4 +362,259 @@ export interface DepositProviderEvent {
   eventType: string;
   payload: Record<string, unknown>;
   createdAt: string;
+}
+
+export type TaskPassStatus = "pending" | "active" | "expired" | "cancelled";
+
+export type DailyTaskType = "checkin" | "manual" | "quiz" | "proof_upload" | "link_visit" | "ad_watch";
+
+export type DailyTaskAssignmentStatus =
+  | "assigned"
+  | "started"
+  | "checking"
+  | "submitted"
+  | "approved"
+  | "rejected"
+  | "claimed";
+
+export type TokenTransactionReason =
+  | "daily_checkin"
+  | "daily_task"
+  | "milestone_reward"
+  | "referral_commission"
+  | "deposit_bonus"
+  | "admin_adjustment"
+  | "redemption";
+export type ReferralCommissionTrigger =
+  | "referred_task_completed"
+  | "referred_milestone_completed"
+  | "referred_deposit_approved";
+
+export type ReferralCommissionRewardType = "fixed_tokens" | "percent_tokens" | "percent_deposit_bonus";
+
+export type DepositBonusStatus = "locked" | "unlocked" | "credited" | "rejected";
+
+export type RedemptionStatus = "pending" | "approved" | "rejected" | "paid";
+
+export type RedemptionPayoutMethod = "manual" | "voucher" | "bank" | "upi";
+
+export interface TaskPassPlan {
+  id: string;
+  name: string;
+  durationDays: number;
+  dailyTaskMin: number;
+  dailyTaskMax: number;
+  dailyTokenCap: number;
+  targetTokens: number;
+  priceAmount: number;
+  currency: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserTaskPass {
+  id: string;
+  userId: string;
+  planId: string;
+  status: TaskPassStatus;
+  startsAt?: string;
+  endsAt?: string;
+  activatedByAdminId?: string;
+  paymentReference?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DailyTask {
+  id: string;
+  title: string;
+  description: string;
+  type: DailyTaskType;
+  rewardTokens: number;
+  requiresApproval: boolean;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserDailyTaskAssignment {
+  id: string;
+  userId: string;
+  taskPassId: string;
+  taskId: string;
+  date: string;
+  status: DailyTaskAssignmentStatus;
+  rewardTokens: number;
+  proof?: string;
+  rejectedReason?: string;
+  createdAt: string;
+  startedAt?: string;
+  submittedAt?: string;
+  approvedAt?: string;
+  claimedAt?: string;
+}
+
+export interface DailyCheckIn {
+  id: string;
+  userId: string;
+  taskPassId: string;
+  date: string;
+  rewardTokens: number;
+  claimedAt: string;
+}
+
+export interface TokenTransaction {
+  id: string;
+  userId: string;
+  amount: number;
+  direction: "credit" | "debit";
+  reason: TokenTransactionReason;
+  referenceId: string;
+  balanceAfter: number;
+  createdAt: string;
+}
+
+export interface TokenBalanceSummary {
+  balance: number;
+  todayEarned: number;
+  todayCap: number;
+  redeemableTokens: number;
+  lockedBonusTokens: number;
+  minimumRedemption: number;
+  conversionRate: number;
+}
+
+export interface DailyOverview {
+  date: string;
+  activeTaskPass: UserTaskPass | null;
+  activePlan: TaskPassPlan | null;
+  dayNumber: number | null;
+  totalDays: number | null;
+  assignedCount: number;
+  completedCount: number;
+  checkInClaimed: boolean;
+  tokenBalance: TokenBalanceSummary;
+  nextMilestone?: UserMilestoneView | null;
+}
+
+export interface AdminDailyAssignment {
+  assignment: UserDailyTaskAssignment;
+  task: DailyTask | null;
+  user: User | null;
+  taskPass: UserTaskPass | null;
+  plan: TaskPassPlan | null;
+}
+
+export interface RewardMilestone {
+  id: string;
+  planId: string;
+  name: string;
+  requiredDay: number;
+  requiredCompletedTasks: number;
+  rewardTokens: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserMilestoneProgress {
+  id: string;
+  userId: string;
+  taskPassId: string;
+  milestoneId: string;
+  status: "pending" | "completed" | "claimed";
+  completedAt?: string;
+  claimedAt?: string;
+}
+
+export interface UserMilestoneView {
+  milestone: RewardMilestone;
+  progress: UserMilestoneProgress;
+  currentDay: number | null;
+  completedTasks: number;
+}
+
+export interface ReferralCommissionRule {
+  id: string;
+  trigger: ReferralCommissionTrigger;
+  rewardType: ReferralCommissionRewardType;
+  rewardValue: number;
+  maxRewardTokens?: number;
+  requiredTaskId?: string;
+  requiredMilestoneId?: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReferralCommission {
+  id: string;
+  referrerUserId: string;
+  referredUserId: string;
+  ruleId: string;
+  triggerType: ReferralCommissionTrigger;
+  triggerReferenceId: string;
+  rewardTokens: number;
+  status: "pending" | "credited" | "rejected";
+  creditedAt?: string;
+  createdAt: string;
+}
+
+export interface DepositBonusRule {
+  id: string;
+  minDepositAmount: number;
+  bonusPercent: number;
+  maxBonusTokens: number;
+  unlockRequiredApprovedTasks: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DepositBonus {
+  id: string;
+  userId: string;
+  depositId: string;
+  ruleId: string;
+  depositAmount: number;
+  bonusTokens: number;
+  unlockRequiredApprovedTasks: number;
+  status: DepositBonusStatus;
+  unlockedAt?: string;
+  creditedAt?: string;
+  createdAt: string;
+}
+
+export interface RedemptionRequest {
+  id: string;
+  userId: string;
+  tokens: number;
+  valueAmount: number;
+  status: RedemptionStatus;
+  payoutMethod: RedemptionPayoutMethod;
+  createdAt: string;
+  reviewedAt?: string;
+  paidAt?: string;
+  note?: string;
+}
+
+export interface ReferralStatusItem {
+  userId: string;
+  name: string;
+  joinedAt: string;
+  status: "joined" | "qualified" | "credited";
+  rewardTokens: number;
+}
+
+export interface ReferralSummary {
+  code: string;
+  totalReferredUsers: number;
+  rewardedReferrals: number;
+  totalRewardAmount: number;
+  totalCommissionTokens: number;
+  pendingCommissionTokens: number;
+  commissionNote: string;
+  referrals: ReferralStatusItem[];
+  commissions: ReferralCommission[];
 }

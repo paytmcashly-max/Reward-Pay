@@ -84,6 +84,172 @@ create table if not exists reward_credits (
   created_at timestamptz not null default now()
 );
 
+create table if not exists task_pass_plans (
+  id text primary key,
+  name text not null,
+  duration_days integer not null,
+  daily_task_min integer not null,
+  daily_task_max integer not null,
+  daily_token_cap numeric(12,2) not null,
+  target_tokens numeric(12,2) not null,
+  price_amount numeric(12,2) not null default 0,
+  currency text not null,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists user_task_passes (
+  id text primary key,
+  user_id text not null references users(id),
+  plan_id text not null references task_pass_plans(id),
+  status text not null,
+  starts_at timestamptz,
+  ends_at timestamptz,
+  activated_by_admin_id text references users(id),
+  payment_reference text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists daily_tasks (
+  id text primary key,
+  title text not null,
+  description text not null,
+  type text not null,
+  reward_tokens numeric(12,2) not null,
+  requires_approval boolean not null default false,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists user_daily_task_assignments (
+  id text primary key,
+  user_id text not null references users(id),
+  task_pass_id text not null references user_task_passes(id),
+  task_id text not null references daily_tasks(id),
+  date text not null,
+  status text not null,
+  reward_tokens numeric(12,2) not null,
+  proof text,
+  created_at timestamptz not null default now(),
+  started_at timestamptz,
+  submitted_at timestamptz,
+  approved_at timestamptz,
+  claimed_at timestamptz,
+  rejected_reason text
+);
+
+create table if not exists daily_check_ins (
+  id text primary key,
+  user_id text not null references users(id),
+  task_pass_id text not null references user_task_passes(id),
+  date text not null,
+  reward_tokens numeric(12,2) not null,
+  claimed_at timestamptz not null default now()
+);
+
+create table if not exists token_transactions (
+  id text primary key,
+  user_id text not null references users(id),
+  amount numeric(12,2) not null,
+  direction text not null,
+  reason text not null,
+  reference_id text not null,
+  balance_after numeric(12,2) not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists reward_milestones (
+  id text primary key,
+  plan_id text not null references task_pass_plans(id),
+  name text not null,
+  required_day integer not null,
+  required_completed_tasks integer not null,
+  reward_tokens numeric(12,2) not null,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists user_milestone_progresses (
+  id text primary key,
+  user_id text not null references users(id),
+  task_pass_id text not null references user_task_passes(id),
+  milestone_id text not null references reward_milestones(id),
+  status text not null,
+  completed_at timestamptz,
+  claimed_at timestamptz
+);
+
+create table if not exists referral_commission_rules (
+  id text primary key,
+  trigger text not null,
+  reward_type text not null,
+  reward_value numeric(12,2) not null,
+  max_reward_tokens numeric(12,2),
+  required_task_id text,
+  required_milestone_id text,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists referral_commissions (
+  id text primary key,
+  referrer_user_id text not null references users(id),
+  referred_user_id text not null references users(id),
+  rule_id text not null references referral_commission_rules(id),
+  trigger_type text not null,
+  trigger_reference_id text not null,
+  reward_tokens numeric(12,2) not null,
+  status text not null,
+  credited_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists deposit_bonus_rules (
+  id text primary key,
+  min_deposit_amount numeric(12,2) not null,
+  bonus_percent numeric(8,2) not null,
+  max_bonus_tokens numeric(12,2) not null,
+  unlock_required_approved_tasks integer not null,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists deposit_bonuses (
+  id text primary key,
+  user_id text not null references users(id),
+  deposit_id text not null references deposit_orders(id),
+  rule_id text not null references deposit_bonus_rules(id),
+  deposit_amount numeric(12,2) not null,
+  bonus_tokens numeric(12,2) not null,
+  unlock_required_approved_tasks integer not null,
+  status text not null,
+  unlocked_at timestamptz,
+  credited_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists redemption_requests (
+  id text primary key,
+  user_id text not null references users(id),
+  tokens numeric(12,2) not null,
+  value_amount numeric(12,2) not null,
+  status text not null,
+  payout_method text not null,
+  note text,
+  created_at timestamptz not null default now(),
+  reviewed_at timestamptz,
+  paid_at timestamptz
+);
+
+alter table deposit_orders
+  add column if not exists task_pass_plan_id text references task_pass_plans(id);
+
 create table if not exists chunk_buckets (
   id text primary key,
   label text not null,

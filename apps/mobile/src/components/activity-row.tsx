@@ -37,7 +37,7 @@ export function ActivityRow({ item, compact = false, onPress }: ActivityRowProps
       mode="outlined"
       onPress={onPress}
       style={{
-        borderRadius: compact ? 16 : 18,
+        borderRadius: compact ? 15 : 18,
         borderCurve: "continuous",
         backgroundColor: "#ffffff",
       }}
@@ -45,26 +45,26 @@ export function ActivityRow({ item, compact = false, onPress }: ActivityRowProps
       <Card.Content
         style={{
           paddingHorizontal: compact ? 8 : 10,
-          paddingVertical: compact ? 8 : 9,
-          gap: compact ? 5 : 6,
+          paddingVertical: compact ? 7 : 9,
+          gap: compact ? 4 : 6,
         }}
       >
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: compact ? 8 : 10 }}>
             <View
               style={{
-                width: compact ? 30 : 34,
-                height: compact ? 30 : 34,
-                borderRadius: 12,
+                width: compact ? 28 : 34,
+                height: compact ? 28 : 34,
+                borderRadius: compact ? 10 : 12,
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor: `${iconTone}18`,
               }}
             >
-              <MaterialCommunityIcons name={toneIcon[item.tone]} size={compact ? 16 : 17} color={iconTone} />
+              <MaterialCommunityIcons name={toneIcon[item.tone]} size={compact ? 14 : 17} color={iconTone} />
             </View>
 
-            <View style={{ flex: 1, gap: 2 }}>
+            <View style={{ flex: 1, gap: compact ? 1 : 2 }}>
               <Text selectable style={{ ...typography.cardTitle, color: colors.ink }}>
                 {item.title}
               </Text>
@@ -79,8 +79,8 @@ export function ActivityRow({ item, compact = false, onPress }: ActivityRowProps
               selectable
               style={{
                 fontFamily: fontFamily.bold,
-                fontSize: compact ? 13 : 14,
-                lineHeight: compact ? 17 : 18,
+                fontSize: compact ? 12.5 : 14,
+                lineHeight: compact ? 16 : 18,
                 color: colors.ink,
                 fontVariant: ["tabular-nums"],
               }}

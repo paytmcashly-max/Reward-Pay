@@ -2,9 +2,15 @@ import {
   walletBalanceExplainers,
 } from "@reward-wallet/shared";
 import type {
+  AdminDailyAssignment,
   AdminRiskReport,
   AdminSession,
   ChunkBucket,
+  DailyCheckIn,
+  DailyOverview,
+  DailyTask,
+  DepositBonus,
+  DepositBonusRule,
   DemandPool,
   DepositOrder,
   GameDefinition,
@@ -12,13 +18,25 @@ import type {
   PaymentProvider,
   ReconciliationEntry,
   ReconciliationReport,
+  RedemptionPayoutMethod,
+  RedemptionRequest,
   ReferralSummary,
+  RewardMilestone,
   RiskIndicator,
+  ReferralCommission,
+  ReferralCommissionRule,
   RewardRule,
   SellOrder,
   SellOrderChunk,
+  TaskPassPlan,
+  TokenBalanceSummary,
+  TokenTransaction,
   TradeMatch,
   User,
+  UserDailyTaskAssignment,
+  UserMilestoneProgress,
+  UserMilestoneView,
+  UserTaskPass,
   WalletBalanceExplainer,
   WalletOverview,
   WalletSummary,
@@ -46,6 +64,10 @@ const OTP_RATE_TTL_SECONDS = 5 * 60;
 const OTP_RATE_LIMIT = 5;
 const DEFAULT_MIN_WITHDRAWAL_AMOUNT = 100;
 const DEFAULT_MAX_PENDING_WITHDRAWALS = 3;
+const DEFAULT_MIN_REDEMPTION_TOKENS = 100;
+const CHECKIN_TASK_ID = "task_checkin";
+const TASK_VALIDATION_DELAY_MS = 2 * 60 * 1000;
+const MIN_TASK_DWELL_MS = 8 * 1000;
 
 export class PlatformEngine {
   readonly paymentAdapters: Record<PaymentProvider, PaymentProviderAdapter>;
@@ -230,7 +252,7 @@ export class PlatformEngine {
     if (requestedAmount !== undefined && wallet.withdrawableBalance < requestedAmount) {
       reasons.push({
         code: "insufficient_balance",
-        message: "Only sold and unlocked balance can be withdrawn.",
+        message: "Your cash wallet does not have enough withdrawable balance.",
       });
     }
 
@@ -257,18 +279,772 @@ export class PlatformEngine {
     return this.store.upsertReferralSummary(userId);
   }
 
+  listTaskPassPlans() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.taskPassPlans.values()).sort((a, b) => a.durationDays - b.durationDays);
+  }
+
+  listTaskPasses() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.userTaskPasses.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getCurrentTaskPass(userId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    return this.getCurrentTaskPassContext(userId);
+  }
+
+  async requestTaskPassActivation(userId: string, planId: string, paymentReference?: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const plan = this.mustTaskPassPlan(planId);
+    const existing = Array.from(this.store.userTaskPasses.values()).find(
+      (taskPass) =>
+        taskPass.userId === userId &&
+        taskPass.planId === plan.id &&
+        (taskPass.status === "pending" || taskPass.status === "active"),
+    );
+    if (existing) {
+      return existing;
+    }
+
+    const taskPass: UserTaskPass = {
+      id: id("task_pass"),
+      userId,
+      planId,
+      status: "pending",
+      paymentReference,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    this.store.userTaskPasses.set(taskPass.id, taskPass);
+    await this.store.flush();
+    return taskPass;
+  }
+
+  async createTaskPassPlan(input: Omit<TaskPassPlan, "id" | "createdAt" | "updatedAt">, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    this.validateTaskPassPlan(input);
+    const plan: TaskPassPlan = {
+      id: id("plan"),
+      createdAt: now(),
+      updatedAt: now(),
+      ...input,
+    };
+    this.store.taskPassPlans.set(plan.id, plan);
+    this.audit(adminUserId, "task_pass_plan.create", "task_pass_plan", plan.id, { ...plan });
+    await this.store.flush();
+    return plan;
+  }
+
+  async updateTaskPassPlan(planId: string, patch: Partial<Omit<TaskPassPlan, "id" | "createdAt">>, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const plan = this.mustTaskPassPlan(planId);
+    const nextPlan: TaskPassPlan = {
+      ...plan,
+      ...patch,
+      id: plan.id,
+      createdAt: plan.createdAt,
+      updatedAt: now(),
+    };
+    this.validateTaskPassPlan(nextPlan);
+    this.store.taskPassPlans.set(planId, nextPlan);
+    this.audit(adminUserId, "task_pass_plan.update", "task_pass_plan", planId, patch as Record<string, unknown>);
+    await this.store.flush();
+    return nextPlan;
+  }
+
+  async activateTaskPass(taskPassId: string, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const taskPass = this.mustUserTaskPass(taskPassId);
+    const nextTaskPass = this.activateTaskPassRecord(taskPass, adminUserId);
+    this.audit(adminUserId, "task_pass.activate", "user_task_pass", taskPassId, {
+      userId: taskPass.userId,
+      planId: taskPass.planId,
+    });
+    await this.store.flush();
+    return nextTaskPass;
+  }
+
+  async cancelTaskPass(taskPassId: string, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const taskPass = this.mustUserTaskPass(taskPassId);
+    const nextTaskPass: UserTaskPass = {
+      ...taskPass,
+      status: "cancelled",
+      updatedAt: now(),
+    };
+    this.store.userTaskPasses.set(taskPassId, nextTaskPass);
+    this.audit(adminUserId, "task_pass.cancel", "user_task_pass", taskPassId, {
+      userId: taskPass.userId,
+      planId: taskPass.planId,
+    });
+    await this.store.flush();
+    return nextTaskPass;
+  }
+
+  listMilestones() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.rewardMilestones.values()).sort((a, b) => a.requiredDay - b.requiredDay);
+  }
+
+  async createMilestone(input: Omit<RewardMilestone, "id" | "createdAt" | "updatedAt">, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    this.mustTaskPassPlan(input.planId);
+    const milestone: RewardMilestone = {
+      id: id("milestone"),
+      createdAt: now(),
+      updatedAt: now(),
+      ...input,
+    };
+    this.store.rewardMilestones.set(milestone.id, milestone);
+    this.audit(adminUserId, "milestone.create", "reward_milestone", milestone.id, milestone as unknown as Record<string, unknown>);
+    await this.store.flush();
+    return milestone;
+  }
+
+  async updateMilestone(milestoneId: string, patch: Partial<Omit<RewardMilestone, "id" | "createdAt">>, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const milestone = this.mustMilestone(milestoneId);
+    const nextMilestone: RewardMilestone = {
+      ...milestone,
+      ...patch,
+      id: milestone.id,
+      createdAt: milestone.createdAt,
+      updatedAt: now(),
+    };
+    this.store.rewardMilestones.set(milestoneId, nextMilestone);
+    this.audit(adminUserId, "milestone.update", "reward_milestone", milestoneId, patch as Record<string, unknown>);
+    await this.store.flush();
+    return nextMilestone;
+  }
+
+  listReferralCommissionRules() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.referralCommissionRules.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async createReferralCommissionRule(input: Omit<ReferralCommissionRule, "id" | "createdAt" | "updatedAt">, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const rule: ReferralCommissionRule = {
+      id: id("referral_rule"),
+      createdAt: now(),
+      updatedAt: now(),
+      ...input,
+    };
+    this.store.referralCommissionRules.set(rule.id, rule);
+    this.audit(adminUserId, "referral_commission_rule.create", "referral_commission_rule", rule.id, rule as unknown as Record<string, unknown>);
+    await this.store.flush();
+    return rule;
+  }
+
+  async updateReferralCommissionRule(
+    ruleId: string,
+    patch: Partial<Omit<ReferralCommissionRule, "id" | "createdAt">>,
+    adminUserId: string,
+  ) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const rule = this.mustReferralCommissionRule(ruleId);
+    const nextRule: ReferralCommissionRule = {
+      ...rule,
+      ...patch,
+      id: rule.id,
+      createdAt: rule.createdAt,
+      updatedAt: now(),
+    };
+    this.store.referralCommissionRules.set(ruleId, nextRule);
+    this.audit(adminUserId, "referral_commission_rule.update", "referral_commission_rule", ruleId, patch as Record<string, unknown>);
+    await this.store.flush();
+    return nextRule;
+  }
+
+  listReferralCommissions() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.referralCommissions.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  listDailyTasks() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.dailyTasks.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  listAdminDailyAssignments(): AdminDailyAssignment[] {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.userDailyTaskAssignments.values())
+      .sort((a, b) => {
+        const dateOrder = b.date.localeCompare(a.date);
+        if (dateOrder !== 0) {
+          return dateOrder;
+        }
+        return b.createdAt.localeCompare(a.createdAt);
+      })
+      .map((assignment) => {
+        const taskPass = this.store.userTaskPasses.get(assignment.taskPassId) ?? null;
+        const plan = taskPass ? this.store.taskPassPlans.get(taskPass.planId) ?? null : null;
+        return {
+          assignment,
+          task: this.store.dailyTasks.get(assignment.taskId) ?? null,
+          user: this.store.users.get(assignment.userId) ?? null,
+          taskPass,
+          plan,
+        };
+      });
+  }
+
+  async createDailyTask(input: Omit<DailyTask, "id" | "createdAt" | "updatedAt">, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const task: DailyTask = {
+      id: id("daily_task"),
+      createdAt: now(),
+      updatedAt: now(),
+      ...input,
+    };
+    this.store.dailyTasks.set(task.id, task);
+    this.audit(adminUserId, "daily_task.create", "daily_task", task.id, { ...task });
+    await this.store.flush();
+    return task;
+  }
+
+  async updateDailyTask(taskId: string, patch: Partial<Omit<DailyTask, "id" | "createdAt">>, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const task = this.mustDailyTask(taskId);
+    const nextTask: DailyTask = {
+      ...task,
+      ...patch,
+      id: task.id,
+      createdAt: task.createdAt,
+      updatedAt: now(),
+    };
+    this.store.dailyTasks.set(task.id, nextTask);
+    this.audit(adminUserId, "daily_task.update", "daily_task", task.id, patch as Record<string, unknown>);
+    await this.store.flush();
+    return nextTask;
+  }
+
+  async disableDailyTask(taskId: string, adminUserId: string) {
+    return this.updateDailyTask(taskId, { active: false }, adminUserId);
+  }
+
+  async assignDailyTasksForUser(userId: string, adminUserId: string, date = this.getTodayDate()) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const context = this.requireActiveTaskPassContext(userId);
+    const assignableTasks = this.getAssignableTasksForPlan(context.plan);
+    const existingAssignments = this.store.findAssignmentsForUserDate(userId, date);
+    const nextAssignments: UserDailyTaskAssignment[] = [];
+
+    for (const task of assignableTasks.slice(0, context.plan.dailyTaskMin)) {
+      const duplicate = existingAssignments.find((assignment) => assignment.taskId === task.id);
+      if (duplicate) {
+        nextAssignments.push(duplicate);
+        continue;
+      }
+
+      const assignment: UserDailyTaskAssignment = {
+        id: id("assignment"),
+        userId,
+        taskPassId: context.taskPass.id,
+        taskId: task.id,
+        date,
+        status: "assigned",
+        rewardTokens: task.rewardTokens,
+        createdAt: now(),
+      };
+      this.store.userDailyTaskAssignments.set(assignment.id, assignment);
+      nextAssignments.push(assignment);
+    }
+
+    this.audit(adminUserId, "daily_tasks.assign_user", "user", userId, {
+      date,
+      assignmentCount: nextAssignments.length,
+      taskPassId: context.taskPass.id,
+    });
+    await this.store.flush();
+    return nextAssignments;
+  }
+
+  async assignDailyTasksForAll(adminUserId: string, date = this.getTodayDate()) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const results: UserDailyTaskAssignment[] = [];
+    const activeUsers = Array.from(this.store.users.values()).filter((user) => user.role === "user" && !user.blocked);
+    for (const user of activeUsers) {
+      const context = this.getCurrentTaskPassContext(user.id);
+      if (!context || context.taskPass.status !== "active") {
+        continue;
+      }
+      const assignments = await this.assignDailyTasksForUser(user.id, adminUserId, date);
+      results.push(...assignments);
+    }
+    this.audit(adminUserId, "daily_tasks.assign_all", "daily_assignments", date, { assignmentCount: results.length });
+    await this.store.flush();
+    return results;
+  }
+
+  getDailyOverview(userId: string): DailyOverview {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    this.processDueTaskValidationsForUser(userId);
+    const context = this.getCurrentTaskPassContext(userId);
+    if (!context) {
+      return {
+        date: this.getTodayDate(),
+        activeTaskPass: null,
+        activePlan: null,
+        dayNumber: null,
+        totalDays: null,
+        assignedCount: 0,
+        completedCount: 0,
+        checkInClaimed: false,
+        tokenBalance: {
+          ...this.getTokenBalance(userId),
+          todayEarned: 0,
+          todayCap: 0,
+        },
+      };
+    }
+
+    const assignments = this.getDailyAssignments(userId);
+    const completedCount = assignments.filter((assignment) => assignment.status === "claimed").length;
+    const checkInClaimed = this.hasDailyCheckIn(userId, context.taskPass.id, this.getTodayDate());
+    const tokenBalance = this.getTokenBalance(userId);
+    const nextMilestone =
+      this.getMilestoneViews(userId).find((item) => item.progress.status !== "claimed") ?? null;
+
+    return {
+      date: this.getTodayDate(),
+      activeTaskPass: context.taskPass,
+      activePlan: context.plan,
+      dayNumber: this.getTaskPassDayNumber(context.taskPass),
+      totalDays: context.plan.durationDays,
+      assignedCount: assignments.length,
+      completedCount,
+      checkInClaimed,
+      tokenBalance,
+      nextMilestone,
+    };
+  }
+
+  claimDailyCheckIn(userId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const context = this.requireActiveTaskPassContext(userId);
+    const date = this.getTodayDate();
+    if (this.hasDailyCheckIn(userId, context.taskPass.id, date)) {
+      throw new AppError("daily_checkin_already_claimed", "Daily check-in has already been claimed today.", 400);
+    }
+
+    this.assertDailyTokenCap(userId, context.plan, 10);
+    const checkIn: DailyCheckIn = {
+      id: id("checkin"),
+      userId,
+      taskPassId: context.taskPass.id,
+      date,
+      rewardTokens: 10,
+      claimedAt: now(),
+    };
+    this.store.dailyCheckIns.unshift(checkIn);
+    this.creditTokens(userId, 10, "daily_checkin", checkIn.id);
+    return this.store.flush().then(() => checkIn);
+  }
+
+  getDailyTasks(userId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    this.processDueTaskValidationsForUser(userId);
+    const context = this.getCurrentTaskPassContext(userId);
+    if (!context) {
+      return [];
+    }
+
+    const taskMap = this.store.dailyTasks;
+    return this.getDailyAssignments(userId).map((assignment) => ({
+      assignment,
+      task: taskMap.get(assignment.taskId)!,
+    }));
+  }
+
+  async startDailyTask(userId: string, assignmentId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const assignment = this.mustAssignment(assignmentId, userId);
+    if (assignment.status !== "assigned") {
+      return assignment;
+    }
+    const nextAssignment: UserDailyTaskAssignment = {
+      ...assignment,
+      status: "started",
+      startedAt: assignment.startedAt ?? now(),
+    };
+    this.store.userDailyTaskAssignments.set(assignment.id, nextAssignment);
+    await this.store.flush();
+    return nextAssignment;
+  }
+
+  async submitDailyTask(userId: string, assignmentId: string, proof?: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const assignment = this.mustAssignment(assignmentId, userId);
+    const task = this.mustDailyTask(assignment.taskId);
+    if (assignment.status === "claimed") {
+      return assignment;
+    }
+
+    const submittedAt = assignment.submittedAt ?? now();
+
+    const nextAssignment: UserDailyTaskAssignment = {
+      ...assignment,
+      status: "checking",
+      proof: proof ?? assignment.proof,
+      startedAt: assignment.startedAt ?? (assignment.status === "assigned" ? submittedAt : assignment.startedAt),
+      submittedAt,
+      approvedAt: undefined,
+      rejectedReason: undefined,
+    };
+    this.store.userDailyTaskAssignments.set(assignment.id, this.processTaskValidation(nextAssignment, task));
+    const processed = this.mustAssignment(assignment.id, userId);
+    if (processed.status === "approved") {
+      await this.maybeUnlockDepositBonusesForUser(userId);
+    }
+    await this.store.flush();
+    return processed;
+  }
+
+  async claimDailyTask(userId: string, assignmentId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    this.processDueTaskValidationsForUser(userId);
+    const assignment = this.mustAssignment(assignmentId, userId);
+    if (assignment.status === "claimed") {
+      return assignment;
+    }
+    if (assignment.status === "checking") {
+      throw new AppError("task_checking", "Task checks are running. Please wait 2-3 minutes and refresh.", 400);
+    }
+    if (assignment.status !== "approved") {
+      throw new AppError("task_not_claimable", "This task must be approved before claiming.", 400);
+    }
+
+    const context = this.requireActiveTaskPassContext(userId);
+    this.assertDailyTokenCap(userId, context.plan, assignment.rewardTokens);
+    if (this.store.tokenTransactions.some((transaction) => transaction.referenceId === assignment.id && transaction.reason === "daily_task")) {
+      return assignment;
+    }
+
+    const nextAssignment: UserDailyTaskAssignment = {
+      ...assignment,
+      status: "claimed",
+      claimedAt: assignment.claimedAt ?? now(),
+    };
+    this.store.userDailyTaskAssignments.set(assignment.id, nextAssignment);
+    this.creditTokens(userId, assignment.rewardTokens, "daily_task", assignment.id);
+    this.maybeTriggerReferralCommissionsForTask(userId, assignment.taskId, assignment.id);
+    await this.maybeUnlockDepositBonusesForUser(userId);
+    await this.store.flush();
+    return nextAssignment;
+  }
+
+  getTokenBalance(userId: string): TokenBalanceSummary {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const today = this.getTodayDate();
+    const wallet = this.store.getWallet(userId);
+    const todayCredits = this.store.tokenTransactions.filter(
+      (transaction) =>
+        transaction.userId === userId &&
+        transaction.direction === "credit" &&
+        transaction.createdAt.slice(0, 10) === today,
+    );
+    const activeContext = this.getCurrentTaskPassContext(userId);
+    return {
+      balance: wallet.withdrawableBalance,
+      todayEarned: todayCredits.reduce((sum, transaction) => sum + transaction.amount, 0),
+      todayCap: activeContext?.plan.dailyTokenCap ?? 0,
+      redeemableTokens: wallet.withdrawableBalance,
+      lockedBonusTokens: this.getLockedBonusTokens(userId),
+      minimumRedemption: DEFAULT_MIN_REDEMPTION_TOKENS,
+      conversionRate: 1,
+    };
+  }
+
+  getTokenLedger(userId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    return this.store.tokenTransactions.filter((transaction) => transaction.userId === userId);
+  }
+
+  getAdminTokenLedger() {
+    this.assertTaskPassEnabled();
+    return this.store.tokenTransactions;
+  }
+
+  getMilestoneViews(userId: string): UserMilestoneView[] {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const context = this.getCurrentTaskPassContext(userId);
+    if (!context) {
+      return [];
+    }
+
+    const currentDay = this.getTaskPassDayNumber(context.taskPass);
+    const completedTasks = this.getCompletedTaskCountForTaskPass(context.taskPass.id);
+    return Array.from(this.store.rewardMilestones.values())
+      .filter((milestone) => milestone.planId === context.plan.id && milestone.active)
+      .sort((a, b) => a.requiredDay - b.requiredDay)
+      .map((milestone) => {
+        const progress = this.ensureMilestoneProgress(userId, context.taskPass.id, milestone, currentDay, completedTasks);
+        return {
+          milestone,
+          progress,
+          currentDay,
+          completedTasks,
+        };
+      });
+  }
+
+  async claimMilestone(userId: string, milestoneId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    const context = this.requireActiveTaskPassContext(userId);
+    const milestone = this.mustMilestone(milestoneId);
+    if (milestone.planId !== context.plan.id) {
+      throw new AppError("milestone_not_found", "Milestone not found", 404);
+    }
+    const currentDay = this.getTaskPassDayNumber(context.taskPass);
+    const completedTasks = this.getCompletedTaskCountForTaskPass(context.taskPass.id);
+    const progress = this.ensureMilestoneProgress(userId, context.taskPass.id, milestone, currentDay, completedTasks);
+    if (progress.status === "claimed") {
+      return progress;
+    }
+    if (progress.status !== "completed") {
+      throw new AppError("milestone_not_claimable", "This milestone is not ready to claim yet.", 400);
+    }
+
+    const nextProgress: UserMilestoneProgress = {
+      ...progress,
+      status: "claimed",
+      claimedAt: progress.claimedAt ?? now(),
+    };
+    this.store.userMilestoneProgresses.set(nextProgress.id, nextProgress);
+    this.creditTokens(userId, milestone.rewardTokens, "milestone_reward", milestone.id);
+    this.maybeTriggerReferralCommissionsForMilestone(userId, milestone.id);
+    await this.store.flush();
+    return nextProgress;
+  }
+
+  getDepositBonuses(userId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    return Array.from(this.store.depositBonuses.values())
+      .filter((bonus) => bonus.userId === userId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  listDepositBonusRules() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.depositBonusRules.values()).sort((a, b) => a.minDepositAmount - b.minDepositAmount);
+  }
+
+  async createDepositBonusRule(input: Omit<DepositBonusRule, "id" | "createdAt" | "updatedAt">, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const rule: DepositBonusRule = {
+      id: id("deposit_bonus_rule"),
+      createdAt: now(),
+      updatedAt: now(),
+      ...input,
+    };
+    this.store.depositBonusRules.set(rule.id, rule);
+    this.audit(adminUserId, "deposit_bonus_rule.create", "deposit_bonus_rule", rule.id, rule as unknown as Record<string, unknown>);
+    await this.store.flush();
+    return rule;
+  }
+
+  async updateDepositBonusRule(ruleId: string, patch: Partial<Omit<DepositBonusRule, "id" | "createdAt">>, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const rule = this.mustDepositBonusRule(ruleId);
+    const nextRule: DepositBonusRule = {
+      ...rule,
+      ...patch,
+      id: rule.id,
+      createdAt: rule.createdAt,
+      updatedAt: now(),
+    };
+    this.store.depositBonusRules.set(ruleId, nextRule);
+    this.audit(adminUserId, "deposit_bonus_rule.update", "deposit_bonus_rule", ruleId, patch as Record<string, unknown>);
+    await this.store.flush();
+    return nextRule;
+  }
+
+  getRedemptions(userId: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    return Array.from(this.store.redemptionRequests.values())
+      .filter((request) => request.userId === userId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async createRedemptionRequest(userId: string, tokens: number, payoutMethod: RedemptionPayoutMethod, note?: string) {
+    this.assertTaskPassEnabled();
+    this.assertActiveUser(userId);
+    if (!this.config.TOKEN_REDEMPTION_ENABLED) {
+      throw new AppError("redemption_disabled", "Redemption is currently disabled.", 400);
+    }
+    if (tokens < DEFAULT_MIN_REDEMPTION_TOKENS) {
+      throw new AppError("minimum_redemption_not_met", `Minimum redemption is ${DEFAULT_MIN_REDEMPTION_TOKENS} tokens.`, 400);
+    }
+    const available = this.getRedeemableTokenBalance(userId);
+    if (available < tokens) {
+      throw new AppError("insufficient_token_balance", "You do not have enough redeemable tokens.", 400);
+    }
+
+    const request: RedemptionRequest = {
+      id: id("redemption"),
+      userId,
+      tokens,
+      valueAmount: tokens,
+      status: "pending",
+      payoutMethod,
+      note,
+      createdAt: now(),
+    };
+    this.store.redemptionRequests.set(request.id, request);
+    this.debitTokens(userId, tokens, "redemption", request.id);
+    await this.store.flush();
+    return request;
+  }
+
+  listAdminRedemptions() {
+    this.assertTaskPassEnabled();
+    return Array.from(this.store.redemptionRequests.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async approveRedemption(redemptionId: string, adminUserId: string) {
+    this.mustUser(adminUserId, "admin");
+    const request = this.mustRedemption(redemptionId);
+    const nextRequest: RedemptionRequest = {
+      ...request,
+      status: "approved",
+      reviewedAt: now(),
+    };
+    this.store.redemptionRequests.set(redemptionId, nextRequest);
+    this.audit(adminUserId, "redemption.approve", "redemption_request", redemptionId, { userId: request.userId, tokens: request.tokens });
+    await this.store.flush();
+    return nextRequest;
+  }
+
+  async rejectRedemption(redemptionId: string, adminUserId: string, note?: string) {
+    this.mustUser(adminUserId, "admin");
+    const request = this.mustRedemption(redemptionId);
+    if (request.status === "rejected") {
+      return request;
+    }
+    const nextRequest: RedemptionRequest = {
+      ...request,
+      status: "rejected",
+      note: note ?? request.note,
+      reviewedAt: now(),
+    };
+    this.store.redemptionRequests.set(redemptionId, nextRequest);
+    this.creditTokens(request.userId, request.tokens, "admin_adjustment", `redemption_restore:${request.id}`);
+    this.audit(adminUserId, "redemption.reject", "redemption_request", redemptionId, { userId: request.userId, tokens: request.tokens, note });
+    await this.store.flush();
+    return nextRequest;
+  }
+
+  async markRedemptionPaid(redemptionId: string, adminUserId: string) {
+    this.mustUser(adminUserId, "admin");
+    const request = this.mustRedemption(redemptionId);
+    const nextRequest: RedemptionRequest = {
+      ...request,
+      status: "paid",
+      reviewedAt: request.reviewedAt ?? now(),
+      paidAt: now(),
+    };
+    this.store.redemptionRequests.set(redemptionId, nextRequest);
+    this.audit(adminUserId, "redemption.mark_paid", "redemption_request", redemptionId, { userId: request.userId, tokens: request.tokens });
+    await this.store.flush();
+    return nextRequest;
+  }
+
+  listAdminTaskSubmissions() {
+    this.assertTaskPassEnabled();
+    return this.listAdminDailyAssignments().filter((item) =>
+      ["checking", "submitted", "approved", "rejected"].includes(item.assignment.status),
+    );
+  }
+
+  async approveTaskSubmission(assignmentId: string, adminUserId: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const assignment = this.mustAssignment(assignmentId);
+    const nextAssignment: UserDailyTaskAssignment = {
+      ...assignment,
+      status: "approved",
+      approvedAt: assignment.approvedAt ?? now(),
+      rejectedReason: undefined,
+    };
+    this.store.userDailyTaskAssignments.set(assignmentId, nextAssignment);
+    await this.maybeUnlockDepositBonusesForUser(nextAssignment.userId);
+    this.audit(adminUserId, "task_submission.approve", "user_daily_task_assignment", assignmentId, {
+      userId: nextAssignment.userId,
+      taskId: nextAssignment.taskId,
+    });
+    await this.store.flush();
+    return nextAssignment;
+  }
+
+  async rejectTaskSubmission(assignmentId: string, adminUserId: string, reason: string) {
+    this.assertTaskPassEnabled();
+    this.mustUser(adminUserId, "admin");
+    const assignment = this.mustAssignment(assignmentId);
+    const nextAssignment: UserDailyTaskAssignment = {
+      ...assignment,
+      status: "rejected",
+      rejectedReason: reason,
+    };
+    this.store.userDailyTaskAssignments.set(assignmentId, nextAssignment);
+    this.audit(adminUserId, "task_submission.reject", "user_daily_task_assignment", assignmentId, {
+      userId: nextAssignment.userId,
+      taskId: nextAssignment.taskId,
+      reason,
+    });
+    await this.store.flush();
+    return nextAssignment;
+  }
+
   listUserDeposits(userId: string) {
     this.assertActiveUser(userId);
     return this.listUserDepositsUnsafe(userId);
   }
 
-  async createDeposit(userId: string, amount: number, provider: PaymentProvider): Promise<DepositOrder> {
+  async createDeposit(userId: string, amount: number, provider: PaymentProvider, taskPassPlanId?: string): Promise<DepositOrder> {
     const user = this.mustUser(userId, "user");
     this.assertActiveUser(userId);
     if (this.config.NODE_ENV === "production" && provider === "mock") {
       throw new AppError("unsupported_provider", "Mock provider is disabled in production", 400);
     }
-    if (amount < 100) {
+    if (taskPassPlanId) {
+      const plan = this.mustTaskPassPlan(taskPassPlanId);
+      if (!plan.active) {
+        throw new AppError("task_pass_plan_inactive", "The selected Task Pass is not active.", 400);
+      }
+      if (!Number.isFinite(amount) || amount < plan.priceAmount) {
+        throw new AppError("task_pass_price_required", `Task Pass payment must be at least ${plan.priceAmount}.`, 400);
+      }
+    } else if (!Number.isFinite(amount) || amount < 100) {
       throw new AppError("min_deposit_amount", "Minimum deposit amount is 100", 400);
     }
 
@@ -298,6 +1074,7 @@ export class PlatformEngine {
       checkoutUrl: checkout.checkoutUrl,
       providerOrderId: checkout.providerOrderId,
       checkoutSession: checkout,
+      taskPassPlanId,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -311,7 +1088,7 @@ export class PlatformEngine {
 
   async confirmDeposit(depositId: string): Promise<DepositOrder> {
     const deposit = this.mustDeposit(depositId);
-    if (deposit.status === "listed") {
+    if (deposit.status === "paid" || deposit.status === "verified" || deposit.status === "reward_credited") {
       return deposit;
     }
 
@@ -326,50 +1103,56 @@ export class PlatformEngine {
 
     if (!stageAlreadyApplied("deposit.lifecycle.principal_credited")) {
       deposit.status = "paid";
-      wallet.principalBalance += deposit.amount;
+      if (deposit.taskPassPlanId) {
+        this.store.addWalletTransaction(deposit.userId, "task_pass_purchase", -deposit.amount, {
+          depositId: deposit.id,
+          provider: deposit.provider,
+          taskPassPlanId: deposit.taskPassPlanId,
+        });
+      } else {
+        wallet.principalBalance += deposit.amount;
+        wallet.withdrawableBalance += deposit.amount;
+        this.store.addWalletTransaction(deposit.userId, "deposit_principal", deposit.amount, {
+          depositId: deposit.id,
+          provider: deposit.provider,
+        });
+      }
       wallet.updatedAt = now();
-      this.store.addWalletTransaction(deposit.userId, "deposit_principal", deposit.amount, {
-        depositId: deposit.id,
-        provider: deposit.provider,
-      });
       this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.principal_credited", {
         amount: deposit.amount,
+        mode: deposit.taskPassPlanId ? "task_pass_purchase" : "cash_wallet",
       });
     }
 
     deposit.status = "verified";
     deposit.updatedAt = now();
-
     if (!stageAlreadyApplied("deposit.lifecycle.reward_credited")) {
       this.applyReward(deposit);
       this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.reward_credited", {
         amount: deposit.amount,
       });
     }
+
+    if (deposit.taskPassPlanId && !stageAlreadyApplied("deposit.lifecycle.task_pass_activated")) {
+      const taskPass = await this.ensureTaskPassFromDeposit(deposit);
+      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.task_pass_activated", {
+        taskPassId: taskPass.id,
+        planId: deposit.taskPassPlanId,
+      });
+    }
+
+    if (!stageAlreadyApplied("deposit.lifecycle.deposit_bonus_locked")) {
+      const bonus = this.maybeCreateDepositBonus(deposit);
+      if (bonus) {
+        this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.deposit_bonus_locked", {
+          bonusId: bonus.id,
+          bonusTokens: bonus.bonusTokens,
+        });
+      }
+    }
+
+    await this.maybeUnlockDepositBonusesForUser(deposit.userId);
     deposit.status = "reward_credited";
-    deposit.updatedAt = now();
-
-    let sellOrder = this.store.findSellOrderByDeposit(deposit.id);
-    if (!sellOrder) {
-      sellOrder = this.createSellOrder(deposit, wallet.principalBalance);
-      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.chunked", {
-        sellOrderId: sellOrder.id,
-      });
-    }
-    deposit.status = "chunked";
-    deposit.updatedAt = now();
-
-    if (!stageAlreadyApplied("deposit.lifecycle.listed")) {
-      this.listChunks(sellOrder);
-      wallet.principalBalance = Math.max(0, wallet.principalBalance - deposit.amount);
-      wallet.listedBalance += deposit.amount;
-      wallet.updatedAt = now();
-      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.listed", {
-        sellOrderId: sellOrder.id,
-      });
-    }
-
-    deposit.status = "listed";
     deposit.updatedAt = now();
     await this.store.flush();
     return deposit;
@@ -381,7 +1164,7 @@ export class PlatformEngine {
       throw new AppError("deposit_not_found", "Deposit not found", 404);
     }
 
-    if (deposit.status === "listed") {
+    if (deposit.status === "paid" || deposit.status === "verified" || deposit.status === "reward_credited") {
       return deposit;
     }
 
@@ -404,9 +1187,7 @@ export class PlatformEngine {
       this.store.addDepositProviderEvent(deposit.id, provider.provider, "deposit.status_sync", {
         verificationKey: "success_terminal",
       });
-      const confirmed = await this.confirmDeposit(deposit.id);
-      await this.runMatchingCycle();
-      return confirmed;
+      return this.confirmDeposit(deposit.id);
     }
 
     if (verification.terminal) {
@@ -432,7 +1213,7 @@ export class PlatformEngine {
     if (deposit.userId !== userId) {
       throw new AppError("deposit_not_found", "Deposit not found", 404);
     }
-    if (deposit.status === "listed" || deposit.status === "verified" || deposit.status === "reward_credited" || deposit.status === "chunked" || deposit.status === "paid") {
+    if (deposit.status === "paid" || deposit.status === "verified" || deposit.status === "reward_credited") {
       throw new AppError("deposit_not_cancellable", "This payment is already processed and cannot be cancelled.", 400);
     }
 
@@ -910,6 +1691,514 @@ export class PlatformEngine {
     }
   }
 
+  private assertTaskPassEnabled() {
+    if (!this.config.TASK_PASS_ENABLED) {
+      throw new AppError("task_pass_disabled", "Task Pass is not enabled right now.", 400);
+    }
+  }
+
+  private mustTaskPassPlan(planId: string) {
+    const plan = this.store.taskPassPlans.get(planId);
+    if (!plan) {
+      throw new AppError("task_pass_plan_not_found", "Task Pass plan not found.", 404);
+    }
+    return plan;
+  }
+
+  private mustUserTaskPass(taskPassId: string) {
+    const taskPass = this.store.userTaskPasses.get(taskPassId);
+    if (!taskPass) {
+      throw new AppError("task_pass_not_found", "Task Pass request not found.", 404);
+    }
+    return taskPass;
+  }
+
+  private mustDailyTask(taskId: string) {
+    const task = this.store.dailyTasks.get(taskId);
+    if (!task) {
+      throw new AppError("daily_task_not_found", "Daily task not found.", 404);
+    }
+    return task;
+  }
+
+  private mustAssignment(assignmentId: string, userId?: string) {
+    const assignment = this.store.userDailyTaskAssignments.get(assignmentId);
+    if (!assignment || (userId && assignment.userId !== userId)) {
+      throw new AppError("assignment_not_found", "Task assignment not found.", 404);
+    }
+    return assignment;
+  }
+
+  private processDueTaskValidationsForUser(userId: string) {
+    let changed = false;
+    for (const assignment of this.store.userDailyTaskAssignments.values()) {
+      if (assignment.userId !== userId || assignment.status !== "checking") {
+        continue;
+      }
+      const task = this.store.dailyTasks.get(assignment.taskId);
+      if (!task) {
+        continue;
+      }
+      const processed = this.processTaskValidation(assignment, task);
+      if (processed !== assignment) {
+        this.store.userDailyTaskAssignments.set(assignment.id, processed);
+        changed = true;
+      }
+    }
+    if (changed) {
+      void this.store.flush();
+    }
+  }
+
+  private processTaskValidation(assignment: UserDailyTaskAssignment, task: DailyTask) {
+    if (assignment.status !== "checking" || !assignment.submittedAt) {
+      return assignment;
+    }
+    const submittedAt = new Date(assignment.submittedAt).getTime();
+    if (Date.now() - submittedAt < this.getTaskValidationDelayMs()) {
+      return assignment;
+    }
+
+    const validation = this.validateTaskSubmission(assignment, task);
+    if (!validation.valid) {
+      return {
+        ...assignment,
+        status: "rejected" as const,
+        rejectedReason: validation.reason,
+      };
+    }
+
+    return {
+      ...assignment,
+      status: "approved" as const,
+      approvedAt: assignment.approvedAt ?? now(),
+      rejectedReason: undefined,
+    };
+  }
+
+  private validateTaskSubmission(assignment: UserDailyTaskAssignment, task: DailyTask) {
+    if (!assignment.startedAt) {
+      return { valid: false, reason: "Task must be started before submission." };
+    }
+    const startedAt = new Date(assignment.startedAt).getTime();
+    const submittedAt = assignment.submittedAt ? new Date(assignment.submittedAt).getTime() : Date.now();
+    if (submittedAt - startedAt < this.getTaskMinimumDwellMs()) {
+      return { valid: false, reason: "Task was submitted too quickly. Please complete the required task before submitting." };
+    }
+
+    const proof = (assignment.proof ?? "").trim();
+    if (task.type === "manual" || task.type === "proof_upload") {
+      if (proof.length < 8) {
+        return { valid: false, reason: "Proof is too short. Add a clear note or proof link." };
+      }
+    }
+    if (task.type === "quiz") {
+      if (!proof || !/(answer|option|[a-dA-D]|\d)/.test(proof)) {
+        return { valid: false, reason: "Quiz answer is missing or not recognizable." };
+      }
+    }
+
+    return { valid: true };
+  }
+
+  private getTaskValidationDelayMs() {
+    return this.config.NODE_ENV === "test" ? 0 : TASK_VALIDATION_DELAY_MS;
+  }
+
+  private getTaskMinimumDwellMs() {
+    return this.config.NODE_ENV === "test" ? 0 : MIN_TASK_DWELL_MS;
+  }
+
+  private validateTaskPassPlan(plan: Omit<TaskPassPlan, "id" | "createdAt" | "updatedAt"> | TaskPassPlan) {
+    if (plan.durationDays <= 0 || plan.dailyTaskMin <= 0 || plan.dailyTaskMax <= 0 || plan.dailyTokenCap <= 0) {
+      throw new AppError("invalid_task_pass_plan", "Task Pass plan values must be positive.", 400);
+    }
+    if (plan.dailyTaskMin > plan.dailyTaskMax) {
+      throw new AppError("invalid_task_pass_plan", "Daily task min cannot exceed daily task max.", 400);
+    }
+    if (plan.targetTokens < 0 || plan.priceAmount < 0) {
+      throw new AppError("invalid_task_pass_plan", "Target tokens and price amount must be non-negative.", 400);
+    }
+  }
+
+  private getCurrentTaskPassContext(userId: string, referenceDate = now()) {
+    const taskPass = this.store.findActiveTaskPass(userId, referenceDate);
+    if (!taskPass) {
+      return null;
+    }
+    const plan = this.store.taskPassPlans.get(taskPass.planId);
+    if (!plan || !plan.active) {
+      return null;
+    }
+    return { taskPass, plan };
+  }
+
+  private requireActiveTaskPassContext(userId: string, referenceDate = now()) {
+    const context = this.getCurrentTaskPassContext(userId, referenceDate);
+    if (!context) {
+      throw new AppError("task_pass_required", "You need an active Task Pass for this action.", 400);
+    }
+    return context;
+  }
+
+  private activateTaskPassRecord(taskPass: UserTaskPass, adminUserId?: string) {
+    const plan = this.mustTaskPassPlan(taskPass.planId);
+    const startsAt = now();
+    const endsAt = new Date(Date.now() + plan.durationDays * 24 * 60 * 60 * 1000).toISOString();
+
+    for (const existing of this.store.userTaskPasses.values()) {
+      if (existing.userId === taskPass.userId && existing.id !== taskPass.id && existing.status === "active") {
+        existing.status = "expired";
+        existing.updatedAt = now();
+      }
+    }
+
+    const nextTaskPass: UserTaskPass = {
+      ...taskPass,
+      status: "active",
+      startsAt,
+      endsAt,
+      activatedByAdminId: adminUserId ?? taskPass.activatedByAdminId,
+      updatedAt: now(),
+    };
+    this.store.userTaskPasses.set(taskPass.id, nextTaskPass);
+    return nextTaskPass;
+  }
+
+  private getAssignableTasksForPlan(plan: TaskPassPlan) {
+    return Array.from(this.store.dailyTasks.values())
+      .filter((task) => task.active && task.type !== "checkin")
+      .sort((a, b) => {
+        if (b.rewardTokens !== a.rewardTokens) {
+          return b.rewardTokens - a.rewardTokens;
+        }
+        return a.createdAt.localeCompare(b.createdAt);
+      })
+      .slice(0, plan.dailyTaskMax);
+  }
+
+  private getTodayDate() {
+    return now().slice(0, 10);
+  }
+
+  private getTaskPassDayNumber(taskPass: UserTaskPass) {
+    if (!taskPass.startsAt) {
+      return null;
+    }
+    const startsAt = new Date(taskPass.startsAt);
+    const today = new Date(this.getTodayDate());
+    return Math.max(1, Math.floor((today.getTime() - startsAt.getTime()) / (24 * 60 * 60 * 1000)) + 1);
+  }
+
+  private hasDailyCheckIn(userId: string, taskPassId: string, date: string) {
+    return this.store.dailyCheckIns.some(
+      (checkIn) => checkIn.userId === userId && checkIn.taskPassId === taskPassId && checkIn.date === date,
+    );
+  }
+
+  private getDailyAssignments(userId: string, date = this.getTodayDate()) {
+    return this.store
+      .findAssignmentsForUserDate(userId, date)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  private creditTokens(
+    userId: string,
+    amount: number,
+    reason: TokenTransaction["reason"],
+    referenceId: string,
+  ) {
+    const existing = this.store.tokenTransactions.find(
+      (transaction) =>
+        transaction.userId === userId &&
+        transaction.direction === "credit" &&
+        transaction.reason === reason &&
+        transaction.referenceId === referenceId,
+    );
+    if (existing) {
+      return existing;
+    }
+    const wallet = this.store.getWallet(userId);
+    wallet.withdrawableBalance += amount;
+    wallet.updatedAt = now();
+    return this.store.addTokenTransaction(userId, amount, "credit", reason, referenceId, wallet.withdrawableBalance);
+  }
+
+  private assertDailyTokenCap(userId: string, plan: TaskPassPlan, nextCreditAmount: number) {
+    const today = this.getTodayDate();
+    const alreadyEarned = this.store.tokenTransactions
+      .filter(
+        (transaction) =>
+          transaction.userId === userId &&
+          transaction.direction === "credit" &&
+          transaction.createdAt.slice(0, 10) === today,
+      )
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+    if (alreadyEarned + nextCreditAmount > plan.dailyTokenCap) {
+      throw new AppError("daily_token_cap_reached", "Today's token cap has already been reached.", 400, {
+        dailyTokenCap: plan.dailyTokenCap,
+      });
+    }
+  }
+
+  private getCompletedTaskCountForTaskPass(taskPassId: string) {
+    return Array.from(this.store.userDailyTaskAssignments.values()).filter(
+      (assignment) => assignment.taskPassId === taskPassId && assignment.status === "claimed",
+    ).length;
+  }
+
+  private ensureMilestoneProgress(
+    userId: string,
+    taskPassId: string,
+    milestone: RewardMilestone,
+    currentDay: number | null,
+    completedTasks: number,
+  ) {
+    const existing = Array.from(this.store.userMilestoneProgresses.values()).find(
+      (progress) => progress.userId === userId && progress.taskPassId === taskPassId && progress.milestoneId === milestone.id,
+    );
+    const shouldComplete =
+      currentDay !== null && currentDay >= milestone.requiredDay && completedTasks >= milestone.requiredCompletedTasks;
+
+    if (!existing) {
+      const progress: UserMilestoneProgress = {
+        id: id("milestone_progress"),
+        userId,
+        taskPassId,
+        milestoneId: milestone.id,
+        status: shouldComplete ? "completed" : "pending",
+        completedAt: shouldComplete ? now() : undefined,
+      };
+      this.store.userMilestoneProgresses.set(progress.id, progress);
+      return progress;
+    }
+
+    if (existing.status === "pending" && shouldComplete) {
+      const nextProgress: UserMilestoneProgress = {
+        ...existing,
+        status: "completed",
+        completedAt: existing.completedAt ?? now(),
+      };
+      this.store.userMilestoneProgresses.set(nextProgress.id, nextProgress);
+      return nextProgress;
+    }
+    return existing;
+  }
+
+  private getRedeemableTokenBalance(userId: string) {
+    return this.store.getWallet(userId).withdrawableBalance;
+  }
+
+  private getLockedBonusTokens(userId: string) {
+    return Array.from(this.store.depositBonuses.values())
+      .filter((bonus) => bonus.userId === userId && bonus.status === "locked")
+      .reduce((sum, bonus) => sum + bonus.bonusTokens, 0);
+  }
+
+  private getTokenBalanceForUserUnsafe(userId: string) {
+    return this.store.tokenTransactions
+      .filter((transaction) => transaction.userId === userId)
+      .reduce((sum, transaction) => sum + (transaction.direction === "credit" ? transaction.amount : -transaction.amount), 0);
+  }
+
+  private debitTokens(
+    userId: string,
+    amount: number,
+    reason: TokenTransaction["reason"],
+    referenceId: string,
+  ) {
+    const existing = this.store.tokenTransactions.find(
+      (transaction) =>
+        transaction.userId === userId &&
+        transaction.direction === "debit" &&
+        transaction.reason === reason &&
+        transaction.referenceId === referenceId,
+    );
+    if (existing) {
+      return existing;
+    }
+    const wallet = this.store.getWallet(userId);
+    wallet.withdrawableBalance = Math.max(0, wallet.withdrawableBalance - amount);
+    wallet.updatedAt = now();
+    return this.store.addTokenTransaction(userId, amount, "debit", reason, referenceId, wallet.withdrawableBalance);
+  }
+
+  private mustMilestone(milestoneId: string) {
+    const milestone = this.store.rewardMilestones.get(milestoneId);
+    if (!milestone) {
+      throw new AppError("milestone_not_found", "Milestone not found", 404);
+    }
+    return milestone;
+  }
+
+  private mustDepositBonusRule(ruleId: string) {
+    const rule = this.store.depositBonusRules.get(ruleId);
+    if (!rule) {
+      throw new AppError("deposit_bonus_rule_not_found", "Deposit bonus rule not found", 404);
+    }
+    return rule;
+  }
+
+  private mustReferralCommissionRule(ruleId: string) {
+    const rule = this.store.referralCommissionRules.get(ruleId);
+    if (!rule) {
+      throw new AppError("referral_commission_rule_not_found", "Referral commission rule not found", 404);
+    }
+    return rule;
+  }
+
+  private mustRedemption(redemptionId: string) {
+    const request = this.store.redemptionRequests.get(redemptionId);
+    if (!request) {
+      throw new AppError("redemption_not_found", "Redemption request not found", 404);
+    }
+    return request;
+  }
+
+  private async ensureTaskPassFromDeposit(deposit: DepositOrder) {
+    if (!deposit.taskPassPlanId) {
+      throw new AppError("task_pass_plan_required", "Task Pass plan is required for activation.", 400);
+    }
+    const plan = this.mustTaskPassPlan(deposit.taskPassPlanId);
+    const existing = Array.from(this.store.userTaskPasses.values()).find(
+      (taskPass) =>
+        taskPass.userId === deposit.userId &&
+        taskPass.planId === plan.id &&
+        taskPass.paymentReference === deposit.id,
+    );
+    if (existing) {
+      if (existing.status !== "active") {
+        return this.activateTaskPassRecord(existing);
+      }
+      return existing;
+    }
+
+    const requested = await this.requestTaskPassActivation(deposit.userId, plan.id, deposit.id);
+    return this.activateTaskPassRecord(requested);
+  }
+
+  private maybeCreateDepositBonus(deposit: DepositOrder) {
+    const existing = Array.from(this.store.depositBonuses.values()).find((bonus) => bonus.depositId === deposit.id);
+    if (existing) {
+      return existing;
+    }
+    const rule = Array.from(this.store.depositBonusRules.values())
+      .filter((candidate) => candidate.active && deposit.amount >= candidate.minDepositAmount)
+      .sort((a, b) => b.minDepositAmount - a.minDepositAmount)[0];
+    if (!rule) {
+      return null;
+    }
+    const computedBonus = Math.min(rule.maxBonusTokens, (deposit.amount * rule.bonusPercent) / 100);
+    if (computedBonus <= 0) {
+      return null;
+    }
+    const bonus: DepositBonus = {
+      id: id("deposit_bonus"),
+      userId: deposit.userId,
+      depositId: deposit.id,
+      ruleId: rule.id,
+      depositAmount: deposit.amount,
+      bonusTokens: Number(computedBonus.toFixed(2)),
+      unlockRequiredApprovedTasks: rule.unlockRequiredApprovedTasks,
+      status: "locked",
+      createdAt: now(),
+    };
+    this.store.depositBonuses.set(bonus.id, bonus);
+    return bonus;
+  }
+
+  private async maybeUnlockDepositBonusesForUser(userId: string) {
+    const approvedTasks = Array.from(this.store.userDailyTaskAssignments.values()).filter(
+      (assignment) => assignment.userId === userId && (assignment.status === "approved" || assignment.status === "claimed"),
+    ).length;
+
+    for (const bonus of this.store.depositBonuses.values()) {
+      if (bonus.userId !== userId || bonus.status !== "locked") {
+        continue;
+      }
+      if (approvedTasks < bonus.unlockRequiredApprovedTasks) {
+        continue;
+      }
+      const nextBonus: DepositBonus = {
+        ...bonus,
+        status: "credited",
+        unlockedAt: bonus.unlockedAt ?? now(),
+        creditedAt: bonus.creditedAt ?? now(),
+      };
+      this.store.depositBonuses.set(bonus.id, nextBonus);
+      this.creditTokens(userId, bonus.bonusTokens, "deposit_bonus", bonus.id);
+    }
+  }
+
+  private maybeTriggerReferralCommissionsForTask(userId: string, taskId: string, referenceId: string) {
+    const user = this.mustUser(userId, "user");
+    const referrerId = user.referredByUserId;
+    if (!referrerId) {
+      return;
+    }
+    const referrer = this.mustUser(referrerId, "user");
+    if (referrer.blocked || user.blocked) {
+      return;
+    }
+    for (const rule of this.store.referralCommissionRules.values()) {
+      if (!rule.active || rule.trigger !== "referred_task_completed" || rule.requiredTaskId !== taskId) {
+        continue;
+      }
+      this.ensureReferralCommission(rule, referrer.id, user.id, referenceId);
+    }
+  }
+
+  private maybeTriggerReferralCommissionsForMilestone(userId: string, milestoneId: string) {
+    const user = this.mustUser(userId, "user");
+    const referrerId = user.referredByUserId;
+    if (!referrerId) {
+      return;
+    }
+    const referrer = this.mustUser(referrerId, "user");
+    if (referrer.blocked || user.blocked) {
+      return;
+    }
+    for (const rule of this.store.referralCommissionRules.values()) {
+      if (!rule.active || rule.trigger !== "referred_milestone_completed") {
+        continue;
+      }
+      if (rule.requiredMilestoneId && rule.requiredMilestoneId !== milestoneId) {
+        continue;
+      }
+      this.ensureReferralCommission(rule, referrer.id, user.id, milestoneId);
+    }
+  }
+
+  private ensureReferralCommission(
+    rule: ReferralCommissionRule,
+    referrerUserId: string,
+    referredUserId: string,
+    triggerReferenceId: string,
+  ) {
+    const existing = Array.from(this.store.referralCommissions.values()).find(
+      (commission) => commission.ruleId === rule.id && commission.triggerReferenceId === triggerReferenceId,
+    );
+    if (existing) {
+      return existing;
+    }
+    const computedReward = Math.min(rule.maxRewardTokens ?? rule.rewardValue, rule.rewardValue);
+    const commission: ReferralCommission = {
+      id: id("referral_commission"),
+      referrerUserId,
+      referredUserId,
+      ruleId: rule.id,
+      triggerType: rule.trigger,
+      triggerReferenceId,
+      rewardTokens: computedReward,
+      status: "credited",
+      creditedAt: now(),
+      createdAt: now(),
+    };
+    this.store.referralCommissions.set(commission.id, commission);
+    this.creditTokens(referrerUserId, commission.rewardTokens, "referral_commission", commission.id);
+    return commission;
+  }
+
   private buildMoneyTimeline(userId: string): MoneyTimelineStep[] {
     const deposits: MoneyTimelineStep[] = this.listUserDeposits(userId).map((deposit) => ({
       id: `deposit:${deposit.id}`,
@@ -1100,7 +2389,7 @@ export class PlatformEngine {
       .reduce((sum, transaction) => sum + transaction.amount, 0);
     const soldAmount = this.store.getWallet(userId).soldBalance;
     if (rewardCredits > 0 && soldAmount > 0 && rewardCredits / Math.max(soldAmount, 1) > 0.5) {
-      reasons.push("Reward usage is high compared with sold balance.");
+      reasons.push("Reward usage is high compared with available cash wallet balance.");
     }
 
     return {
@@ -1223,6 +2512,7 @@ export class PlatformEngine {
       if (referrer) {
         const referrerWallet = this.store.getWallet(referrer.id);
         referrerWallet.rewardBalance += 25;
+        referrerWallet.withdrawableBalance += 25;
         referrerWallet.updatedAt = now();
         this.store.addWalletTransaction(referrer.id, "reward_credit", 25, {
           reason: "referral",
@@ -1244,6 +2534,7 @@ export class PlatformEngine {
     const reward = Math.floor((deposit.amount * rule.rewardPercent) / 100);
     const wallet = this.store.getWallet(deposit.userId);
     wallet.rewardBalance += reward;
+    wallet.withdrawableBalance += reward;
     wallet.updatedAt = now();
     this.store.addWalletTransaction(deposit.userId, "reward_credit", reward, {
       depositId: deposit.id,

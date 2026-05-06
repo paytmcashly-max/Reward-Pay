@@ -35,8 +35,8 @@ const depositBadge: Record<DepositStatus, string> = {
   paid: "Paid",
   verified: "Verified",
   reward_credited: "Rewarded",
-  chunked: "Chunked",
-  listed: "Listed",
+  chunked: "Processing",
+  listed: "Settled",
   failed: "Failed",
   cancelled: "Cancelled",
 };
@@ -64,6 +64,7 @@ const withdrawalBadge: Record<WithdrawalStatus, string> = {
 const transactionTone: Record<WalletTransaction["type"], ActivityFeedTone> = {
   deposit_principal: "success",
   reward_credit: "success",
+  task_pass_purchase: "success",
   chunk_listed: "info",
   chunk_match: "success",
   withdraw_request: "warning",
@@ -75,8 +76,9 @@ const transactionTone: Record<WalletTransaction["type"], ActivityFeedTone> = {
 const transactionBadge: Record<WalletTransaction["type"], string> = {
   deposit_principal: "Paid",
   reward_credit: "Reward",
-  chunk_listed: "Listed",
-  chunk_match: "Sold",
+  task_pass_purchase: "Task Pass",
+  chunk_listed: "Legacy",
+  chunk_match: "Legacy",
   withdraw_request: "Requested",
   withdraw_reversal: "Reversed",
   game_entry: "Played",

@@ -30,6 +30,10 @@ services:
         value: "true"
       - key: INVITE_CODE
         sync: false
+      - key: TASK_PASS_ENABLED
+        value: "true"
+      - key: TOKEN_REDEMPTION_ENABLED
+        value: "false"
       - key: JWT_TTL_SECONDS
         value: "604800"
       - key: JWT_SECRET

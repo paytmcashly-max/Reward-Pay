@@ -21,7 +21,7 @@ const statusLabel: Record<DepositStatus, string> = {
   verified: "Verified",
   reward_credited: "Rewarded",
   chunked: "Processing",
-  listed: "Listed",
+  listed: "Settled",
   failed: "Failed",
   cancelled: "Cancelled",
 };
@@ -31,9 +31,9 @@ const statusHint: Record<DepositStatus, string> = {
   payment_pending: "Waiting for provider confirmation.",
   paid: "Payment received, verification in progress.",
   verified: "Verification passed, funds are moving into the wallet.",
-  reward_credited: "Reward is credited. Listing is in progress.",
-  chunked: "Deposit is being prepared for listing.",
-  listed: "Deposit settled and added to sold flow.",
+  reward_credited: "Reward is credited and balance is updated.",
+  chunked: "Legacy processing state. No new Task Pass flow depends on it.",
+  listed: "Legacy settled state. New Task Pass payments activate the selected pass.",
   failed: "Payment was not completed successfully.",
   cancelled: "Checkout was closed before completion.",
 };

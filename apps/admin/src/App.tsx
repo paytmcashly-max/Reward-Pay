@@ -45,16 +45,27 @@ import {
   createTheme,
 } from "@mui/material";
 import type {
+  AdminDailyAssignment,
   AdminAuditLog,
   AdminRiskReport,
   ChunkBucket,
+  DailyTask,
   DemandPool,
+  DepositBonus,
+  DepositBonusRule,
   DepositOrder,
   Paginated,
+  RedemptionRequest,
   ReconciliationReport,
+  ReferralCommission,
+  ReferralCommissionRule,
+  RewardMilestone,
   RiskLevel,
   RewardRule,
+  TaskPassPlan,
+  TokenTransaction,
   User,
+  UserTaskPass,
   WithdrawRequest,
 } from "@reward-wallet/shared";
 import type { ChangeEvent, ReactElement, ReactNode } from "react";
@@ -85,18 +96,58 @@ type ProviderStatus = {
   redisConfigured: boolean;
 };
 
-type NavSection = "overview" | "users" | "money" | "config" | "audit";
+type NavSection =
+  | "taskPassPlans"
+  | "userPasses"
+  | "dailyTasks"
+  | "assignments"
+  | "submissions"
+  | "milestones"
+  | "referralRules"
+  | "depositBonuses"
+  | "tokenLedger"
+  | "redemptions"
+  | "overview"
+  | "users"
+  | "tasks"
+  | "money"
+  | "config"
+  | "audit";
+
+type TaskPassPlanDraft = Omit<TaskPassPlan, "id" | "createdAt" | "updatedAt">;
+type DailyTaskDraft = Omit<DailyTask, "id" | "createdAt" | "updatedAt">;
+
+const createTaskPassPlanDraft = (): TaskPassPlanDraft => ({
+  name: "New Pass",
+  durationDays: 7,
+  dailyTaskMin: 2,
+  dailyTaskMax: 3,
+  dailyTokenCap: 60,
+  targetTokens: 300,
+  priceAmount: 0,
+  currency: "INR",
+  active: true,
+});
+
+const createDailyTaskDraft = (): DailyTaskDraft => ({
+  title: "New Daily Task",
+  description: "Describe the task for users.",
+  type: "manual",
+  rewardTokens: 20,
+  requiresApproval: false,
+  active: true,
+});
 
 const dashboardTheme = createTheme({
   palette: {
-    mode: "light",
-    primary: { main: "#1f5fbf", dark: "#163f81", light: "#6e97e2" },
-    secondary: { main: "#c9812a", dark: "#9d6118", light: "#e8b061" },
-    success: { main: "#227a5d" },
-    warning: { main: "#c57a1e" },
-    error: { main: "#c54e46" },
-    background: { default: "#f3f6fb", paper: "#ffffff" },
-    text: { primary: "#172033", secondary: "#607086" },
+    mode: "dark",
+    primary: { main: "#22c55e", dark: "#16a34a", light: "#86efac" },
+    secondary: { main: "#facc15", dark: "#ca8a04", light: "#fde68a" },
+    success: { main: "#22c55e" },
+    warning: { main: "#facc15" },
+    error: { main: "#ef4444" },
+    background: { default: "#07111f", paper: "#101827" },
+    text: { primary: "#f8fafc", secondary: "#94a3b8" },
   },
   shape: { borderRadius: 18 },
   typography: {
@@ -111,8 +162,9 @@ const dashboardTheme = createTheme({
     MuiCard: {
       styleOverrides: {
         root: {
-          border: "1px solid rgba(19, 32, 51, 0.08)",
-          boxShadow: "0 18px 40px rgba(23, 32, 51, 0.08)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          boxShadow: "0 18px 40px rgba(0,0,0,0.18)",
+          backgroundColor: "#101827",
         },
       },
     },
@@ -157,11 +209,16 @@ const toInitials = (value: string) =>
     .toUpperCase();
 
 const sectionMeta: Array<{ id: NavSection; label: string; caption: string; icon: ReactElement }> = [
-  { id: "overview", label: "Overview", caption: "Ops health and live status", icon: <DashboardRoundedIcon /> },
-  { id: "users", label: "Users", caption: "User control and status", icon: <PeopleRoundedIcon /> },
-  { id: "money", label: "Money Ops", caption: "Deposits, payouts, reviews", icon: <AccountBalanceWalletRoundedIcon /> },
-  { id: "config", label: "Config", caption: "Rules, buckets, demand", icon: <TuneRoundedIcon /> },
-  { id: "audit", label: "Audit", caption: "Operator action trail", icon: <ReceiptLongRoundedIcon /> },
+  { id: "taskPassPlans", label: "Task Pass Plans", caption: "Plan pricing and caps", icon: <BubbleChartRoundedIcon /> },
+  { id: "userPasses", label: "User Passes", caption: "Activation and expiry", icon: <PeopleRoundedIcon /> },
+  { id: "dailyTasks", label: "Daily Tasks", caption: "Task templates", icon: <TuneRoundedIcon /> },
+  { id: "assignments", label: "Assignments", caption: "Daily user work", icon: <ReceiptLongRoundedIcon /> },
+  { id: "submissions", label: "Submissions", caption: "Proof review", icon: <ShieldRoundedIcon /> },
+  { id: "milestones", label: "Milestones", caption: "Progress rewards", icon: <InsightsRoundedIcon /> },
+  { id: "referralRules", label: "Referral Rules", caption: "Triggered commissions", icon: <AutorenewRoundedIcon /> },
+  { id: "depositBonuses", label: "Deposit Bonuses", caption: "Locked token bonuses", icon: <SavingsRoundedIcon /> },
+  { id: "tokenLedger", label: "Token Ledger", caption: "Per-user token trail", icon: <ReceiptLongRoundedIcon /> },
+  { id: "redemptions", label: "Redemptions", caption: "Cash payout requests", icon: <GavelRoundedIcon /> },
 ];
 
 function App() {
@@ -171,8 +228,12 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<NavSection>("overview");
+  const [activeSection, setActiveSection] = useState<NavSection>("taskPassPlans");
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [userFilter, setUserFilter] = useState("");
+  const [planFilter, setPlanFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("");
   const [users, setUsers] = useState<Paginated<User> | null>(null);
   const [deposits, setDeposits] = useState<Paginated<DepositOrder> | null>(null);
   const [withdrawals, setWithdrawals] = useState<Paginated<WithdrawRequest> | null>(null);
@@ -184,35 +245,68 @@ function App() {
   const [riskReport, setRiskReport] = useState<AdminRiskReport | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationReport | null>(null);
   const [matchingPaused, setMatchingPaused] = useState(false);
+  const [taskPassPlans, setTaskPassPlans] = useState<TaskPassPlan[]>([]);
+  const [taskPasses, setTaskPasses] = useState<UserTaskPass[]>([]);
+  const [dailyTasks, setDailyTasks] = useState<DailyTask[]>([]);
+  const [dailyAssignments, setDailyAssignments] = useState<AdminDailyAssignment[]>([]);
+  const [tokenLedger, setTokenLedger] = useState<TokenTransaction[]>([]);
+  const [milestones, setMilestones] = useState<RewardMilestone[]>([]);
+  const [referralRules, setReferralRules] = useState<ReferralCommissionRule[]>([]);
+  const [referralCommissions, setReferralCommissions] = useState<ReferralCommission[]>([]);
+  const [depositBonusRules, setDepositBonusRules] = useState<DepositBonusRule[]>([]);
+  const [depositBonuses, setDepositBonuses] = useState<DepositBonus[]>([]);
+  const [redemptions, setRedemptions] = useState<RedemptionRequest[]>([]);
+  const [newTaskPassPlan, setNewTaskPassPlan] = useState<TaskPassPlanDraft>(createTaskPassPlanDraft);
+  const [newDailyTask, setNewDailyTask] = useState<DailyTaskDraft>(createDailyTaskDraft);
 
   const loadDashboard = async (token: string) => {
     setLoading(true);
     setError(null);
     try {
-      const [usersData, depositsData, withdrawalsData, rewardRulesData, chunkBucketsData, demandPoolsData, auditLogsData, providerStatusData, riskReportData, reconciliationData] =
+      const [usersData, depositsData, withdrawalsData, rewardRulesData, auditLogsData, providerStatusData, riskReportData, reconciliationData, taskPassPlansData, taskPassesData, dailyTasksData, dailyAssignmentsData, tokenLedgerData, milestonesData, referralRulesData, referralCommissionsData, depositBonusRulesData, depositBonusesData, redemptionsData] =
         await Promise.all([
           request<Paginated<User>>("/admin/users?page=1&pageSize=50", { token }),
           request<Paginated<DepositOrder>>("/admin/deposits?page=1&pageSize=50", { token }),
           request<Paginated<WithdrawRequest>>("/admin/withdrawals?page=1&pageSize=50", { token }),
           request<RewardRule[]>("/admin/reward-rules", { token }),
-          request<ChunkBucket[]>("/admin/chunk-buckets", { token }),
-          request<DemandPool[]>("/admin/demand-pools", { token }),
           request<Paginated<AdminAuditLog>>("/admin/audit-logs?page=1&pageSize=20", { token }),
           request<ProviderStatus>("/health/providers"),
           request<AdminRiskReport>("/admin/risk-report", { token }).catch(() => ({ users: {}, deposits: {}, withdrawals: {} })),
           request<ReconciliationReport>("/admin/reconciliation", { token }).catch(() => ({ entries: [] })),
+          request<TaskPassPlan[]>("/admin/task-pass-plans", { token }).catch(() => []),
+          request<UserTaskPass[]>("/admin/task-passes", { token }).catch(() => []),
+          request<DailyTask[]>("/admin/tasks", { token }).catch(() => []),
+          request<AdminDailyAssignment[]>("/admin/daily-assignments", { token }).catch(() => []),
+          request<TokenTransaction[]>("/admin/token-ledger", { token }).catch(() => []),
+          request<RewardMilestone[]>("/admin/milestones", { token }).catch(() => []),
+          request<ReferralCommissionRule[]>("/admin/referral-commission-rules", { token }).catch(() => []),
+          request<ReferralCommission[]>("/admin/referral-commissions", { token }).catch(() => []),
+          request<DepositBonusRule[]>("/admin/deposit-bonus-rules", { token }).catch(() => []),
+          request<DepositBonus[]>("/admin/deposit-bonuses", { token }).catch(() => []),
+          request<RedemptionRequest[]>("/admin/redemptions", { token }).catch(() => []),
         ]);
 
       setUsers(usersData);
       setDeposits(depositsData);
       setWithdrawals(withdrawalsData);
       setRewardRules(rewardRulesData);
-      setChunkBuckets(chunkBucketsData);
-      setDemandPools(demandPoolsData);
+      setChunkBuckets([]);
+      setDemandPools([]);
       setAuditLogs(auditLogsData);
       setProviderStatus(providerStatusData);
       setRiskReport(riskReportData);
       setReconciliation(reconciliationData);
+      setTaskPassPlans(taskPassPlansData);
+      setTaskPasses(taskPassesData);
+      setDailyTasks(dailyTasksData);
+      setDailyAssignments(dailyAssignmentsData);
+      setTokenLedger(tokenLedgerData);
+      setMilestones(milestonesData);
+      setReferralRules(referralRulesData);
+      setReferralCommissions(referralCommissionsData);
+      setDepositBonusRules(depositBonusRulesData);
+      setDepositBonuses(depositBonusesData);
+      setRedemptions(redemptionsData);
       setMatchingPaused(false);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load dashboard");
@@ -234,21 +328,18 @@ function App() {
   }, []);
 
   const metrics = useMemo(() => {
-    const listedInventory =
-      deposits?.items.filter((deposit) => deposit.status === "listed").reduce((sum, deposit) => sum + deposit.amount, 0) ?? 0;
-    const pendingDeposits = deposits?.items.filter((deposit) => deposit.status !== "listed").length ?? 0;
-    const pendingWithdrawals =
-      withdrawals?.items.filter((withdrawal) => withdrawal.status === "queued_for_review" || withdrawal.status === "provider_processing")
-        .length ?? 0;
-    const blockedUsers = users?.items.filter((user) => user.blocked).length ?? 0;
+    const activePasses = taskPasses.filter((taskPass) => taskPass.status === "active").length;
+    const pendingSubmissions = dailyAssignments.filter((item) => ["checking", "submitted"].includes(item.assignment.status)).length;
+    const pendingRedemptions = redemptions.filter((item) => item.status === "pending").length;
+    const creditedTokens = tokenLedger.filter((entry) => entry.direction === "credit").reduce((sum, entry) => sum + entry.amount, 0);
 
     return [
-      { title: "Total Users", value: `${users?.total ?? 0}`, subtitle: `${blockedUsers} blocked for review`, icon: <PeopleRoundedIcon color="primary" /> },
-      { title: "Pending Deposits", value: `${pendingDeposits}`, subtitle: "Orders awaiting verification", icon: <SavingsRoundedIcon color="warning" /> },
-      { title: "Pending Withdrawals", value: `${pendingWithdrawals}`, subtitle: "Operator action or provider state", icon: <GavelRoundedIcon color="error" /> },
-      { title: "Listed Inventory", value: toCurrency(listedInventory), subtitle: "Funds active in auto-sell engine", icon: <InsightsRoundedIcon color="success" /> },
+      { title: "Active Passes", value: `${activePasses}`, subtitle: "Users currently earning tokens", icon: <PeopleRoundedIcon color="primary" /> },
+      { title: "Submissions", value: `${pendingSubmissions}`, subtitle: "Proof reviews waiting", icon: <ShieldRoundedIcon color="warning" /> },
+      { title: "Redemptions", value: `${pendingRedemptions}`, subtitle: "Token payout requests", icon: <GavelRoundedIcon color="error" /> },
+      { title: "Tokens Credited", value: `${creditedTokens.toLocaleString("en-IN")}`, subtitle: "Lifetime reward ledger", icon: <InsightsRoundedIcon color="success" /> },
     ];
-  }, [deposits, users, withdrawals]);
+  }, [dailyAssignments, redemptions, taskPasses, tokenLedger]);
 
   const onAction = async (key: string, task: () => Promise<void>, success: string) => {
     setActionKey(key);
@@ -265,6 +356,946 @@ function App() {
 
   const riskColor = (level: RiskLevel): "success" | "warning" | "error" =>
     level === "high" ? "error" : level === "medium" ? "warning" : "success";
+
+  const statusColor = (status: string): "success" | "warning" | "error" | "info" | "default" => {
+    if (["active", "approved", "claimed", "credited", "paid"].includes(status)) {
+      return "success";
+    }
+    if (["pending", "checking", "submitted", "payment_pending", "locked"].includes(status)) {
+      return "warning";
+    }
+    if (["rejected", "cancelled", "failed", "expired"].includes(status)) {
+      return "error";
+    }
+    return "info";
+  };
+
+  const matchesFilters = (input: { status?: string; userId?: string; planId?: string; date?: string }) =>
+    (statusFilter === "all" || input.status === statusFilter) &&
+    (!userFilter || (input.userId ?? "").toLowerCase().includes(userFilter.toLowerCase())) &&
+    (planFilter === "all" || input.planId === planFilter) &&
+    (!dateFilter || input.date === dateFilter);
+
+  const filteredTaskPasses = taskPasses.filter((taskPass) =>
+    matchesFilters({ status: taskPass.status, userId: taskPass.userId, planId: taskPass.planId }),
+  );
+  const filteredAssignments = dailyAssignments.filter((item) =>
+    matchesFilters({
+      status: item.assignment.status,
+      userId: item.assignment.userId,
+      planId: item.taskPass?.planId,
+      date: item.assignment.date,
+    }),
+  );
+  const filteredSubmissions = filteredAssignments.filter((item) => ["checking", "submitted", "rejected", "approved"].includes(item.assignment.status));
+  const filteredTokenLedger = tokenLedger.filter((entry) => matchesFilters({ status: entry.reason, userId: entry.userId }));
+  const filteredRedemptions = redemptions.filter((item) => matchesFilters({ status: item.status, userId: item.userId }));
+
+  const planName = (planId?: string) => taskPassPlans.find((plan) => plan.id === planId)?.name ?? planId ?? "No plan";
+  const userName = (userId?: string) => users?.items.find((user) => user.id === userId)?.name ?? userId ?? "Unknown user";
+
+  const sectionTitle = sectionMeta.find((section) => section.id === activeSection);
+
+  const filterBar = (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 4, mb: 2, bgcolor: "rgba(255,255,255,0.03)" }}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+        <TextField
+          label="Status"
+          placeholder="all, active, pending..."
+          value={statusFilter}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => setStatusFilter(event.target.value.trim() || "all")}
+        />
+        <TextField
+          label="User ID"
+          placeholder="Filter by user"
+          value={userFilter}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => setUserFilter(event.target.value)}
+        />
+        <TextField
+          label="Plan ID"
+          placeholder="all or plan id"
+          value={planFilter}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => setPlanFilter(event.target.value.trim() || "all")}
+        />
+        <TextField
+          label="Date"
+          placeholder="YYYY-MM-DD"
+          value={dateFilter}
+          onChange={(event: ChangeEvent<HTMLInputElement>) => setDateFilter(event.target.value)}
+        />
+        <Button
+          variant="outlined"
+          onClick={() => {
+            setStatusFilter("all");
+            setUserFilter("");
+            setPlanFilter("all");
+            setDateFilter("");
+          }}
+        >
+          Clear filters
+        </Button>
+      </Stack>
+    </Paper>
+  );
+
+  const renderRewardOpsSection = () => {
+    if (!sectionTitle) {
+      return null;
+    }
+    const activeSession = session;
+    if (!activeSession) {
+      return null;
+    }
+
+    if (activeSection === "taskPassPlans") {
+      return (
+        <Stack spacing={3}>
+          <PanelCard
+            title="Task Pass Plans"
+            subtitle="Plan pricing, daily task ranges, caps, and Earn up to token targets."
+            action={
+              <Button
+                variant="contained"
+                onClick={() =>
+                  onAction(
+                    "save-task-pass-plans",
+                    async () => {
+                      await Promise.all(
+                        taskPassPlans.map((plan) =>
+                          request(`/admin/task-pass-plans/${plan.id}`, {
+                            method: "PATCH",
+                            token: session.accessToken,
+                            body: JSON.stringify(plan),
+                          }),
+                        ),
+                      );
+                      await loadDashboard(session.accessToken);
+                    },
+                    "Task Pass plans saved.",
+                  )
+                }
+              >
+                Save plans
+              </Button>
+            }
+          >
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Plan</TableCell>
+                    <TableCell>Duration</TableCell>
+                    <TableCell>Daily tasks</TableCell>
+                    <TableCell>Daily cap</TableCell>
+                    <TableCell>Earn up to</TableCell>
+                    <TableCell>Price</TableCell>
+                    <TableCell>Status</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {taskPassPlans.map((plan, index) => (
+                    <TableRow key={plan.id} hover>
+                      <TableCell>
+                        <TextField
+                          value={plan.name}
+                          onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                            setTaskPassPlans((current) =>
+                              current.map((item, itemIndex) => (itemIndex === index ? { ...item, name: event.target.value } : item)),
+                            )
+                          }
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <NumberField
+                          value={plan.durationDays}
+                          onChange={(value) =>
+                            setTaskPassPlans((current) =>
+                              current.map((item, itemIndex) => (itemIndex === index ? { ...item, durationDays: value } : item)),
+                            )
+                          }
+                          endAdornment="days"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Stack direction="row" spacing={1}>
+                          <NumberField
+                            value={plan.dailyTaskMin}
+                            onChange={(value) =>
+                              setTaskPassPlans((current) =>
+                                current.map((item, itemIndex) => (itemIndex === index ? { ...item, dailyTaskMin: value } : item)),
+                              )
+                            }
+                          />
+                          <NumberField
+                            value={plan.dailyTaskMax}
+                            onChange={(value) =>
+                              setTaskPassPlans((current) =>
+                                current.map((item, itemIndex) => (itemIndex === index ? { ...item, dailyTaskMax: value } : item)),
+                              )
+                            }
+                          />
+                        </Stack>
+                      </TableCell>
+                      <TableCell>
+                        <NumberField
+                          value={plan.dailyTokenCap}
+                          onChange={(value) =>
+                            setTaskPassPlans((current) =>
+                              current.map((item, itemIndex) => (itemIndex === index ? { ...item, dailyTokenCap: value } : item)),
+                            )
+                          }
+                          endAdornment="tokens"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <NumberField
+                          value={plan.targetTokens}
+                          onChange={(value) =>
+                            setTaskPassPlans((current) =>
+                              current.map((item, itemIndex) => (itemIndex === index ? { ...item, targetTokens: value } : item)),
+                            )
+                          }
+                          endAdornment="tokens"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <NumberField
+                          value={plan.priceAmount}
+                          onChange={(value) =>
+                            setTaskPassPlans((current) =>
+                              current.map((item, itemIndex) => (itemIndex === index ? { ...item, priceAmount: value } : item)),
+                            )
+                          }
+                          endAdornment={plan.currency}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant={plan.active ? "contained" : "outlined"}
+                          color={plan.active ? "success" : "warning"}
+                          onClick={() =>
+                            setTaskPassPlans((current) =>
+                              current.map((item, itemIndex) => (itemIndex === index ? { ...item, active: !item.active } : item)),
+                            )
+                          }
+                        >
+                          {plan.active ? "Active" : "Paused"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </PanelCard>
+
+          <PanelCard
+            title="Create Task Pass Plan"
+            subtitle="Create touch-friendly user plans. Use Earn up to X tokens and Complete tasks to earn tokens copy."
+            action={
+              <Button
+                variant="contained"
+                onClick={() =>
+                  onAction(
+                    "create-task-pass-plan",
+                    async () => {
+                      await request("/admin/task-pass-plans", {
+                        method: "POST",
+                        token: session.accessToken,
+                        body: JSON.stringify(newTaskPassPlan),
+                      });
+                      setNewTaskPassPlan(createTaskPassPlanDraft());
+                      await loadDashboard(session.accessToken);
+                    },
+                    "Task Pass plan created.",
+                  )
+                }
+              >
+                Create plan
+              </Button>
+            }
+          >
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2} useFlexGap flexWrap="wrap">
+              <TextField label="Plan name" value={newTaskPassPlan.name} onChange={(event: ChangeEvent<HTMLInputElement>) => setNewTaskPassPlan((current) => ({ ...current, name: event.target.value }))} />
+              <TextField label="Currency" value={newTaskPassPlan.currency} onChange={(event: ChangeEvent<HTMLInputElement>) => setNewTaskPassPlan((current) => ({ ...current, currency: event.target.value.toUpperCase() }))} />
+              <NumberField value={newTaskPassPlan.durationDays} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, durationDays: value }))} endAdornment="days" />
+              <NumberField value={newTaskPassPlan.dailyTaskMin} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, dailyTaskMin: value }))} />
+              <NumberField value={newTaskPassPlan.dailyTaskMax} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, dailyTaskMax: value }))} />
+              <NumberField value={newTaskPassPlan.dailyTokenCap} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, dailyTokenCap: value }))} endAdornment="tokens" />
+              <NumberField value={newTaskPassPlan.targetTokens} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, targetTokens: value }))} endAdornment="tokens" />
+              <NumberField value={newTaskPassPlan.priceAmount} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, priceAmount: value }))} endAdornment="INR" />
+            </Stack>
+          </PanelCard>
+        </Stack>
+      );
+    }
+
+    if (activeSection === "userPasses") {
+      return (
+        <PanelCard title="User Passes" subtitle="Activate or cancel Task Pass access with an audit-friendly operator trail.">
+          {filterBar}
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>User</TableCell>
+                  <TableCell>Plan</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Window</TableCell>
+                  <TableCell>Payment</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredTaskPasses.map((taskPass) => (
+                  <TableRow key={taskPass.id} hover>
+                    <TableCell>{userName(taskPass.userId)}</TableCell>
+                    <TableCell>{planName(taskPass.planId)}</TableCell>
+                    <TableCell><Chip size="small" color={statusColor(taskPass.status)} label={taskPass.status} /></TableCell>
+                    <TableCell>{taskPass.startsAt ? `${toDateTime(taskPass.startsAt)} -> ${taskPass.endsAt ? toDateTime(taskPass.endsAt) : "open"}` : "Not started"}</TableCell>
+                    <TableCell>{taskPass.paymentReference ?? "Manual/admin"}</TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button
+                          variant="contained"
+                          size="small"
+                          disabled={taskPass.status === "active"}
+                          onClick={() =>
+                            onAction(
+                              `task-pass-activate-${taskPass.id}`,
+                              async () => {
+                                await request(`/admin/task-passes/${taskPass.id}/activate`, { method: "POST", token: session.accessToken });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Task Pass activated.",
+                            )
+                          }
+                        >
+                          Activate
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          color="error"
+                          size="small"
+                          disabled={taskPass.status === "cancelled"}
+                          onClick={() =>
+                            onAction(
+                              `task-pass-cancel-${taskPass.id}`,
+                              async () => {
+                                await request(`/admin/task-passes/${taskPass.id}/cancel`, { method: "POST", token: session.accessToken });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Task Pass cancelled.",
+                            )
+                          }
+                        >
+                          Cancel
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    if (activeSection === "dailyTasks") {
+      return (
+        <PanelCard title="Daily Tasks" subtitle="Configure daily task templates. Rewards depend on task completion and approval.">
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Task</TableCell>
+                  <TableCell>Type</TableCell>
+                  <TableCell>Reward</TableCell>
+                  <TableCell>Approval</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {dailyTasks.map((task, index) => (
+                  <TableRow key={task.id} hover>
+                    <TableCell>
+                      <Stack spacing={1}>
+                        <TextField value={task.title} onChange={(event: ChangeEvent<HTMLInputElement>) => setDailyTasks((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, title: event.target.value } : item)))} />
+                        <TextField multiline minRows={2} value={task.description} onChange={(event: ChangeEvent<HTMLInputElement>) => setDailyTasks((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, description: event.target.value } : item)))} />
+                      </Stack>
+                    </TableCell>
+                    <TableCell>{task.type}</TableCell>
+                    <TableCell>
+                      <NumberField value={task.rewardTokens} onChange={(value) => setDailyTasks((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, rewardTokens: value } : item)))} endAdornment="tokens" />
+                    </TableCell>
+                    <TableCell><Chip size="small" color={task.requiresApproval ? "warning" : "success"} label={task.requiresApproval ? "Manual review" : "Auto approve"} /></TableCell>
+                    <TableCell><Chip size="small" color={task.active ? "success" : "default"} label={task.active ? "Active" : "Disabled"} /></TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button
+                          variant="contained"
+                          size="small"
+                          onClick={() =>
+                            onAction(
+                              `task-save-${task.id}`,
+                              async () => {
+                                await request(`/admin/tasks/${task.id}`, {
+                                  method: "PATCH",
+                                  token: session.accessToken,
+                                  body: JSON.stringify(task),
+                                });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Daily task saved.",
+                            )
+                          }
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() =>
+                            onAction(
+                              `task-toggle-${task.id}`,
+                              async () => {
+                                await request(`/admin/tasks/${task.id}`, {
+                                  method: "PATCH",
+                                  token: session.accessToken,
+                                  body: JSON.stringify({ active: !task.active }),
+                                });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Daily task status updated.",
+                            )
+                          }
+                        >
+                          {task.active ? "Disable" : "Enable"}
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    if (activeSection === "assignments") {
+      return (
+        <PanelCard
+          title="Assignments"
+          subtitle="Assign and monitor daily task work for active Task Pass users."
+          action={
+            <Button
+              variant="contained"
+              onClick={() =>
+                onAction(
+                  "assign-all-daily",
+                  async () => {
+                    await request("/admin/daily/assign-all", { method: "POST", token: session.accessToken });
+                    await loadDashboard(session.accessToken);
+                  },
+                  "Daily tasks assigned to all active users.",
+                )
+              }
+            >
+              Assign all active users
+            </Button>
+          }
+        >
+          {filterBar}
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>User</TableCell>
+                  <TableCell>Plan</TableCell>
+                  <TableCell>Task</TableCell>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Reward</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredAssignments.map((item) => (
+                  <TableRow key={item.assignment.id} hover>
+                    <TableCell>{item.user?.name ?? item.assignment.userId}</TableCell>
+                    <TableCell>{item.plan?.name ?? planName(item.taskPass?.planId)}</TableCell>
+                    <TableCell>{item.task?.title ?? item.assignment.taskId}</TableCell>
+                    <TableCell>{item.assignment.date}</TableCell>
+                    <TableCell><Chip size="small" color={statusColor(item.assignment.status)} label={item.assignment.status} /></TableCell>
+                    <TableCell>{item.assignment.rewardTokens} tokens</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        onClick={() =>
+                          onAction(
+                            `assign-user-${item.assignment.userId}`,
+                            async () => {
+                              await request(`/admin/users/${item.assignment.userId}/assign-daily-tasks`, { method: "POST", token: session.accessToken });
+                              await loadDashboard(session.accessToken);
+                            },
+                            "Daily tasks assigned.",
+                          )
+                        }
+                      >
+                        Assign today
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    if (activeSection === "submissions") {
+      return (
+        <PanelCard title="Submissions" subtitle="Approve or reject proof submissions without changing reward math.">
+          {filterBar}
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>User</TableCell>
+                  <TableCell>Task</TableCell>
+                  <TableCell>Proof</TableCell>
+                  <TableCell>Submitted</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredSubmissions.map((item) => (
+                  <TableRow key={item.assignment.id} hover>
+                    <TableCell>{item.user?.name ?? item.assignment.userId}</TableCell>
+                    <TableCell>{item.task?.title ?? item.assignment.taskId}</TableCell>
+                    <TableCell sx={{ maxWidth: 280 }}>{item.assignment.proof ?? "No proof text"}</TableCell>
+                    <TableCell>{item.assignment.submittedAt ? toDateTime(item.assignment.submittedAt) : "-"}</TableCell>
+                    <TableCell><Chip size="small" color={statusColor(item.assignment.status)} label={item.assignment.status} /></TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button
+                          variant="contained"
+                          size="small"
+                          onClick={() =>
+                            onAction(
+                              `submission-approve-${item.assignment.id}`,
+                              async () => {
+                                await request(`/admin/task-submissions/${item.assignment.id}/approve`, { method: "POST", token: session.accessToken });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Task submission approved.",
+                            )
+                          }
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          color="error"
+                          size="small"
+                          onClick={() =>
+                            onAction(
+                              `submission-reject-${item.assignment.id}`,
+                              async () => {
+                                await request(`/admin/task-submissions/${item.assignment.id}/reject`, {
+                                  method: "POST",
+                                  token: session.accessToken,
+                                  body: JSON.stringify({ reason: "Rejected by admin review." }),
+                                });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Task submission rejected.",
+                            )
+                          }
+                        >
+                          Reject
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    if (activeSection === "milestones") {
+      return (
+        <PanelCard title="Milestones" subtitle="Configure required day, completed tasks, and milestone reward tokens.">
+          {filterBar}
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Milestone</TableCell>
+                  <TableCell>Plan</TableCell>
+                  <TableCell>Required day</TableCell>
+                  <TableCell>Required tasks</TableCell>
+                  <TableCell>Reward</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {milestones.filter((item) => matchesFilters({ status: item.active ? "active" : "disabled", planId: item.planId })).map((milestone) => (
+                  <TableRow key={milestone.id} hover>
+                    <TableCell>{milestone.name}</TableCell>
+                    <TableCell>{planName(milestone.planId)}</TableCell>
+                    <TableCell>Day {milestone.requiredDay}</TableCell>
+                    <TableCell>{milestone.requiredCompletedTasks}</TableCell>
+                    <TableCell>{milestone.rewardTokens} tokens</TableCell>
+                    <TableCell><Chip size="small" color={milestone.active ? "success" : "default"} label={milestone.active ? "Active" : "Disabled"} /></TableCell>
+                    <TableCell align="right">
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        onClick={() =>
+                          onAction(
+                            `milestone-toggle-${milestone.id}`,
+                            async () => {
+                              await request(`/admin/milestones/${milestone.id}`, {
+                                method: "PATCH",
+                                token: session.accessToken,
+                                body: JSON.stringify({ active: !milestone.active }),
+                              });
+                              await loadDashboard(session.accessToken);
+                            },
+                            "Milestone status updated.",
+                          )
+                        }
+                      >
+                        {milestone.active ? "Disable" : "Enable"}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    if (activeSection === "referralRules") {
+      return (
+        <Stack spacing={3}>
+          <PanelCard title="Referral Rules" subtitle="Commission is credited only after configured task, milestone, or deposit triggers.">
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Trigger</TableCell>
+                    <TableCell>Reward type</TableCell>
+                    <TableCell>Value</TableCell>
+                    <TableCell>Cap</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell align="right">Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {referralRules.map((rule) => (
+                    <TableRow key={rule.id} hover>
+                      <TableCell>{rule.trigger}</TableCell>
+                      <TableCell>{rule.rewardType}</TableCell>
+                      <TableCell>{rule.rewardValue}</TableCell>
+                      <TableCell>{rule.maxRewardTokens ?? "-"}</TableCell>
+                      <TableCell><Chip size="small" color={rule.active ? "success" : "default"} label={rule.active ? "Active" : "Disabled"} /></TableCell>
+                      <TableCell align="right">
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() =>
+                            onAction(
+                              `referral-rule-toggle-${rule.id}`,
+                              async () => {
+                                await request(`/admin/referral-commission-rules/${rule.id}`, {
+                                  method: "PATCH",
+                                  token: session.accessToken,
+                                  body: JSON.stringify({ active: !rule.active }),
+                                });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Referral rule updated.",
+                            )
+                          }
+                        >
+                          {rule.active ? "Disable" : "Enable"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </PanelCard>
+          <PanelCard title="Referral Commissions" subtitle="Audit trail for pending and credited referral token commissions.">
+            {filterBar}
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Referrer</TableCell>
+                    <TableCell>Referred</TableCell>
+                    <TableCell>Trigger</TableCell>
+                    <TableCell>Tokens</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Created</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {referralCommissions.filter((item) => matchesFilters({ status: item.status, userId: item.referrerUserId })).map((commission) => (
+                    <TableRow key={commission.id} hover>
+                      <TableCell>{userName(commission.referrerUserId)}</TableCell>
+                      <TableCell>{userName(commission.referredUserId)}</TableCell>
+                      <TableCell>{commission.triggerType}</TableCell>
+                      <TableCell>{commission.rewardTokens}</TableCell>
+                      <TableCell><Chip size="small" color={statusColor(commission.status)} label={commission.status} /></TableCell>
+                      <TableCell>{toDateTime(commission.createdAt)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </PanelCard>
+        </Stack>
+      );
+    }
+
+    if (activeSection === "depositBonuses") {
+      return (
+        <Stack spacing={3}>
+          <PanelCard title="Deposit Bonus Rules" subtitle="Locked bonus tokens from qualifying payments. They never become cash wallet balance.">
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Min deposit</TableCell>
+                    <TableCell>Bonus</TableCell>
+                    <TableCell>Cap</TableCell>
+                    <TableCell>Unlock tasks</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell align="right">Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {depositBonusRules.map((rule) => (
+                    <TableRow key={rule.id} hover>
+                      <TableCell>{toCurrency(rule.minDepositAmount)}</TableCell>
+                      <TableCell>{rule.bonusPercent}%</TableCell>
+                      <TableCell>{rule.maxBonusTokens} tokens</TableCell>
+                      <TableCell>{rule.unlockRequiredApprovedTasks}</TableCell>
+                      <TableCell><Chip size="small" color={rule.active ? "success" : "default"} label={rule.active ? "Active" : "Disabled"} /></TableCell>
+                      <TableCell align="right">
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() =>
+                            onAction(
+                              `bonus-rule-toggle-${rule.id}`,
+                              async () => {
+                                await request(`/admin/deposit-bonus-rules/${rule.id}`, {
+                                  method: "PATCH",
+                                  token: session.accessToken,
+                                  body: JSON.stringify({ active: !rule.active }),
+                                });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Deposit bonus rule updated.",
+                            )
+                          }
+                        >
+                          {rule.active ? "Disable" : "Enable"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </PanelCard>
+          <PanelCard title="Deposit Bonuses" subtitle="Monitor locked, unlocked, credited, and rejected bonus token records.">
+            {filterBar}
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>User</TableCell>
+                    <TableCell>Deposit</TableCell>
+                    <TableCell>Deposit amount</TableCell>
+                    <TableCell>Bonus tokens</TableCell>
+                    <TableCell>Unlock tasks</TableCell>
+                    <TableCell>Status</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {depositBonuses.filter((item) => matchesFilters({ status: item.status, userId: item.userId })).map((bonus) => (
+                    <TableRow key={bonus.id} hover>
+                      <TableCell>{userName(bonus.userId)}</TableCell>
+                      <TableCell sx={{ fontFamily: "monospace" }}>{bonus.depositId}</TableCell>
+                      <TableCell>{toCurrency(bonus.depositAmount)}</TableCell>
+                      <TableCell>{bonus.bonusTokens}</TableCell>
+                      <TableCell>{bonus.unlockRequiredApprovedTasks}</TableCell>
+                      <TableCell><Chip size="small" color={statusColor(bonus.status)} label={bonus.status} /></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </PanelCard>
+        </Stack>
+      );
+    }
+
+    if (activeSection === "tokenLedger") {
+      return (
+        <PanelCard title="Token Ledger" subtitle="Server-authoritative credit/debit entries per user.">
+          {filterBar}
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>User</TableCell>
+                  <TableCell>Reason</TableCell>
+                  <TableCell>Direction</TableCell>
+                  <TableCell>Amount</TableCell>
+                  <TableCell>Balance after</TableCell>
+                  <TableCell>Reference</TableCell>
+                  <TableCell>Timestamp</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredTokenLedger.map((entry) => (
+                  <TableRow key={entry.id} hover>
+                    <TableCell>{userName(entry.userId)}</TableCell>
+                    <TableCell><Chip size="small" color="info" label={entry.reason} /></TableCell>
+                    <TableCell><Chip size="small" color={entry.direction === "credit" ? "success" : "warning"} label={entry.direction} /></TableCell>
+                    <TableCell>{entry.direction === "credit" ? "+" : "-"}{entry.amount} tokens</TableCell>
+                    <TableCell>{entry.balanceAfter}</TableCell>
+                    <TableCell sx={{ fontFamily: "monospace" }}>{entry.referenceId}</TableCell>
+                    <TableCell>{toDateTime(entry.createdAt)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    if (activeSection === "redemptions") {
+      return (
+        <PanelCard title="Redemptions" subtitle="Approve, reject, or mark token payout requests as paid.">
+          {filterBar}
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>User</TableCell>
+                  <TableCell>Tokens</TableCell>
+                  <TableCell>Value</TableCell>
+                  <TableCell>Payout</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Created</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredRedemptions.map((redemption) => (
+                  <TableRow key={redemption.id} hover>
+                    <TableCell>{userName(redemption.userId)}</TableCell>
+                    <TableCell>{redemption.tokens}</TableCell>
+                    <TableCell>{toCurrency(redemption.valueAmount)}</TableCell>
+                    <TableCell>{redemption.payoutMethod}</TableCell>
+                    <TableCell><Chip size="small" color={statusColor(redemption.status)} label={redemption.status} /></TableCell>
+                    <TableCell>{toDateTime(redemption.createdAt)}</TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={redemption.status !== "pending"}
+                          onClick={() =>
+                            onAction(
+                              `redemption-approve-${redemption.id}`,
+                              async () => {
+                                await request(`/admin/redemptions/${redemption.id}/approve`, { method: "POST", token: session.accessToken });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Redemption approved.",
+                            )
+                          }
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="error"
+                          disabled={redemption.status !== "pending"}
+                          onClick={() =>
+                            onAction(
+                              `redemption-reject-${redemption.id}`,
+                              async () => {
+                                await request(`/admin/redemptions/${redemption.id}/reject`, {
+                                  method: "POST",
+                                  token: session.accessToken,
+                                  body: JSON.stringify({ reason: "Rejected by admin review." }),
+                                });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Redemption rejected and tokens restored.",
+                            )
+                          }
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={redemption.status !== "approved"}
+                          onClick={() =>
+                            onAction(
+                              `redemption-paid-${redemption.id}`,
+                              async () => {
+                                await request(`/admin/redemptions/${redemption.id}/mark-paid`, { method: "POST", token: session.accessToken });
+                                await loadDashboard(session.accessToken);
+                              },
+                              "Redemption marked paid.",
+                            )
+                          }
+                        >
+                          Mark paid
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </PanelCard>
+      );
+    }
+
+    return (
+      <PanelCard title={sectionTitle.label} subtitle={sectionTitle.caption}>
+        <Typography color="text.secondary">This section is reserved for reward operations.</Typography>
+      </PanelCard>
+    );
+  };
 
   const sidebar = (
     <Box
@@ -362,7 +1393,7 @@ function App() {
                 Reward Wallet Console
               </Typography>
               <Typography variant="body1" sx={{ opacity: 0.84 }}>
-                Sign in to manage rewards, approvals, liquidity buckets, and payout operations.
+                Sign in to manage Task Passes, daily tasks, token rewards, approvals, and payout operations.
               </Typography>
             </Box>
 
@@ -438,8 +1469,8 @@ function App() {
           color="inherit"
           elevation={0}
           sx={{
-            borderBottom: "1px solid rgba(23,32,51,0.08)",
-            bgcolor: "rgba(255,255,255,0.78)",
+            borderBottom: "1px solid rgba(255,255,255,0.08)",
+            bgcolor: "rgba(7,17,31,0.86)",
             backdropFilter: "blur(16px)",
             width: { md: `calc(100% - ${SIDEBAR_WIDTH}px)` },
             ml: { md: `${SIDEBAR_WIDTH}px` },
@@ -519,12 +1550,12 @@ function App() {
                   <Typography variant="overline" sx={{ letterSpacing: "0.18em", opacity: 0.72 }}>
                     Live operations view
                   </Typography>
-                  <Typography variant="h3" sx={{ mt: 0.5, mb: 1.5 }}>
-                    One place to control funds, rules, and user approvals
+                <Typography variant="h3" sx={{ mt: 0.5, mb: 1.5 }}>
+                    Task Pass rewards command center
                   </Typography>
                   <Typography variant="body1" sx={{ maxWidth: 720, opacity: 0.84 }}>
-                    Review deposits, approve withdrawals, tune rewards, and monitor storage and payout readiness without
-                    bouncing between screens.
+                    Manage plans, daily tasks, milestones, referral commissions, token ledger entries, and redemption
+                    requests without exposing the old listing marketplace in primary operations.
                   </Typography>
                 </Box>
                 <Stack spacing={1.25} minWidth={{ lg: 280 }}>
@@ -632,6 +1663,8 @@ function App() {
                 />
               </Box>
             ) : null}
+
+            {sectionMeta.some((section) => section.id === activeSection) ? renderRewardOpsSection() : null}
 
             {activeSection === "overview" ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", xl: "1.3fr 1fr" }, gap: 3 }}>
@@ -805,8 +1838,713 @@ function App() {
                   </Table>
                 </TableContainer>
               </PanelCard>
-            ) : null}
+              ) : null}
 
+            {activeSection === "tasks" ? (
+              <Stack spacing={3}>
+                <PanelCard
+                  title="Task Pass plans"
+                  subtitle="Manage daily task ranges, caps, and pass duration."
+                  action={
+                    <Button
+                      variant="contained"
+                      onClick={() =>
+                        onAction(
+                          "save-task-pass-plans",
+                          async () => {
+                            await Promise.all(
+                              taskPassPlans.map((plan) =>
+                                request(`/admin/task-pass-plans/${plan.id}`, {
+                                  method: "PATCH",
+                                  token: session.accessToken,
+                                  body: JSON.stringify({
+                                    name: plan.name,
+                                    durationDays: plan.durationDays,
+                                    dailyTaskMin: plan.dailyTaskMin,
+                                    dailyTaskMax: plan.dailyTaskMax,
+                                    dailyTokenCap: plan.dailyTokenCap,
+                                    targetTokens: plan.targetTokens,
+                                    priceAmount: plan.priceAmount,
+                                    currency: plan.currency,
+                                    active: plan.active,
+                                  }),
+                                }),
+                              ),
+                            );
+                            await loadDashboard(session.accessToken);
+                          },
+                          "Task Pass plans saved.",
+                        )
+                      }
+                    >
+                      Save plans
+                    </Button>
+                  }
+                >
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Plan</TableCell>
+                          <TableCell>Days</TableCell>
+                          <TableCell>Task range</TableCell>
+                          <TableCell>Daily cap</TableCell>
+                          <TableCell>Target</TableCell>
+                          <TableCell>Price</TableCell>
+                          <TableCell>Status</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {taskPassPlans.map((plan, index) => (
+                          <TableRow key={plan.id} hover>
+                            <TableCell>
+                              <Stack spacing={1}>
+                                <TextField
+                                  value={plan.name}
+                                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                                    setTaskPassPlans((current) =>
+                                      current.map((item, itemIndex) => (itemIndex === index ? { ...item, name: event.target.value } : item)),
+                                    )
+                                  }
+                                />
+                                <TextField
+                                  value={plan.currency}
+                                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                                    setTaskPassPlans((current) =>
+                                      current.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, currency: event.target.value.toUpperCase() } : item,
+                                      ),
+                                    )
+                                  }
+                                />
+                              </Stack>
+                            </TableCell>
+                            <TableCell>
+                              <NumberField
+                                value={plan.durationDays}
+                                onChange={(value) =>
+                                  setTaskPassPlans((current) =>
+                                    current.map((item, itemIndex) => (itemIndex === index ? { ...item, durationDays: value } : item)),
+                                  )
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Stack direction="row" spacing={1}>
+                                <NumberField
+                                  value={plan.dailyTaskMin}
+                                  onChange={(value) =>
+                                    setTaskPassPlans((current) =>
+                                      current.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, dailyTaskMin: value } : item,
+                                      ),
+                                    )
+                                  }
+                                />
+                                <NumberField
+                                  value={plan.dailyTaskMax}
+                                  onChange={(value) =>
+                                    setTaskPassPlans((current) =>
+                                      current.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, dailyTaskMax: value } : item,
+                                      ),
+                                    )
+                                  }
+                                />
+                              </Stack>
+                            </TableCell>
+                            <TableCell>
+                              <NumberField
+                                value={plan.dailyTokenCap}
+                                onChange={(value) =>
+                                  setTaskPassPlans((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, dailyTokenCap: value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <NumberField
+                                value={plan.targetTokens}
+                                onChange={(value) =>
+                                  setTaskPassPlans((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, targetTokens: value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <NumberField
+                                value={plan.priceAmount}
+                                onChange={(value) =>
+                                  setTaskPassPlans((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, priceAmount: value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant={plan.active ? "contained" : "outlined"}
+                                color={plan.active ? "success" : "warning"}
+                                onClick={() =>
+                                  setTaskPassPlans((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, active: !item.active } : item,
+                                    ),
+                                  )
+                                }
+                              >
+                                {plan.active ? "Active" : "Paused"}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard
+                  title="Create Task Pass plan"
+                  subtitle="Add a new plan for admin-activated users."
+                  action={
+                    <Button
+                      variant="contained"
+                      onClick={() =>
+                        onAction(
+                          "create-task-pass-plan",
+                          async () => {
+                            await request("/admin/task-pass-plans", {
+                              method: "POST",
+                              token: session.accessToken,
+                              body: JSON.stringify(newTaskPassPlan),
+                            });
+                            setNewTaskPassPlan(createTaskPassPlanDraft());
+                            await loadDashboard(session.accessToken);
+                          },
+                          "Task Pass plan created.",
+                        )
+                      }
+                    >
+                      Create plan
+                    </Button>
+                  }
+                >
+                  <Stack direction={{ xs: "column", md: "row" }} spacing={2} useFlexGap flexWrap="wrap">
+                    <TextField label="Plan name" value={newTaskPassPlan.name} onChange={(event: ChangeEvent<HTMLInputElement>) => setNewTaskPassPlan((current) => ({ ...current, name: event.target.value }))} />
+                    <TextField label="Currency" value={newTaskPassPlan.currency} onChange={(event: ChangeEvent<HTMLInputElement>) => setNewTaskPassPlan((current) => ({ ...current, currency: event.target.value.toUpperCase() }))} />
+                    <NumberField value={newTaskPassPlan.durationDays} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, durationDays: value }))} />
+                    <NumberField value={newTaskPassPlan.dailyTaskMin} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, dailyTaskMin: value }))} />
+                    <NumberField value={newTaskPassPlan.dailyTaskMax} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, dailyTaskMax: value }))} />
+                    <NumberField value={newTaskPassPlan.dailyTokenCap} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, dailyTokenCap: value }))} />
+                    <NumberField value={newTaskPassPlan.targetTokens} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, targetTokens: value }))} />
+                    <NumberField value={newTaskPassPlan.priceAmount} onChange={(value) => setNewTaskPassPlan((current) => ({ ...current, priceAmount: value }))} />
+                  </Stack>
+                </PanelCard>
+
+                <PanelCard title="User Task Passes" subtitle="Pending requests can be activated manually by admin.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>User</TableCell>
+                          <TableCell>Plan</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell>Dates</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {taskPasses.map((taskPass) => (
+                          <TableRow key={taskPass.id} hover>
+                            <TableCell>{taskPass.userId}</TableCell>
+                            <TableCell>{taskPassPlans.find((plan) => plan.id === taskPass.planId)?.name ?? taskPass.planId}</TableCell>
+                            <TableCell>
+                              <Chip size="small" color={taskPass.status === "active" ? "success" : taskPass.status === "pending" ? "warning" : "default"} label={taskPass.status} />
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="body2" color="text.secondary">
+                                {taskPass.startsAt ? toDateTime(taskPass.startsAt) : "Not started"}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button
+                                  variant="contained"
+                                  size="small"
+                                  disabled={taskPass.status !== "pending"}
+                                  onClick={() =>
+                                    onAction(
+                                      `task-pass-activate-${taskPass.id}`,
+                                      async () => {
+                                        await request(`/admin/task-passes/${taskPass.id}/activate`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `Task Pass ${taskPass.id} activated.`,
+                                    )
+                                  }
+                                >
+                                  Activate
+                                </Button>
+                                <Button
+                                  variant="outlined"
+                                  color="error"
+                                  size="small"
+                                  disabled={taskPass.status === "cancelled"}
+                                  onClick={() =>
+                                    onAction(
+                                      `task-pass-cancel-${taskPass.id}`,
+                                      async () => {
+                                        await request(`/admin/task-passes/${taskPass.id}/cancel`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `Task Pass ${taskPass.id} cancelled.`,
+                                    )
+                                  }
+                                >
+                                  Cancel
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Daily Tasks" subtitle="Configure which tasks can be assigned to active pass users.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Task</TableCell>
+                          <TableCell>Type</TableCell>
+                          <TableCell>Reward</TableCell>
+                          <TableCell>Approval</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {dailyTasks.map((task, index) => (
+                          <TableRow key={task.id} hover>
+                            <TableCell>
+                              <Stack spacing={1}>
+                                <TextField
+                                  value={task.title}
+                                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                                    setDailyTasks((current) =>
+                                      current.map((item, itemIndex) => (itemIndex === index ? { ...item, title: event.target.value } : item)),
+                                    )
+                                  }
+                                />
+                                <TextField
+                                  multiline
+                                  minRows={2}
+                                  value={task.description}
+                                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                                    setDailyTasks((current) =>
+                                      current.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, description: event.target.value } : item,
+                                      ),
+                                    )
+                                  }
+                                />
+                              </Stack>
+                            </TableCell>
+                            <TableCell>
+                              <TextField
+                                value={task.type}
+                                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                                  setDailyTasks((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, type: event.target.value as DailyTask["type"] } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <NumberField
+                                value={task.rewardTokens}
+                                onChange={(value) =>
+                                  setDailyTasks((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, rewardTokens: value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant={task.requiresApproval ? "contained" : "outlined"}
+                                size="small"
+                                onClick={() =>
+                                  setDailyTasks((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, requiresApproval: !item.requiresApproval } : item,
+                                    ),
+                                  )
+                                }
+                              >
+                                {task.requiresApproval ? "Required" : "Auto"}
+                              </Button>
+                            </TableCell>
+                            <TableCell>
+                              <Chip size="small" color={task.active ? "success" : "default"} label={task.active ? "Active" : "Paused"} />
+                            </TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button
+                                  variant="contained"
+                                  size="small"
+                                  onClick={() =>
+                                    onAction(
+                                      `task-save-${task.id}`,
+                                      async () => {
+                                        await request(`/admin/tasks/${task.id}`, {
+                                          method: "PATCH",
+                                          token: session.accessToken,
+                                          body: JSON.stringify({
+                                            title: task.title,
+                                            description: task.description,
+                                            type: task.type,
+                                            rewardTokens: task.rewardTokens,
+                                            requiresApproval: task.requiresApproval,
+                                            active: task.active,
+                                          }),
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `${task.title} saved.`,
+                                    )
+                                  }
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  onClick={() =>
+                                    onAction(
+                                      `task-toggle-${task.id}`,
+                                      async () => {
+                                        await request(`/admin/tasks/${task.id}`, {
+                                          method: "PATCH",
+                                          token: session.accessToken,
+                                          body: JSON.stringify({ active: !task.active }),
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `${task.title} updated.`,
+                                    )
+                                  }
+                                >
+                                  {task.active ? "Pause" : "Enable"}
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Assignment actions" subtitle="Assign today’s task set for active pass users.">
+                  <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                    <Button
+                      variant="contained"
+                      onClick={() =>
+                        onAction(
+                          "assign-all-daily",
+                          async () => {
+                            await request("/admin/daily/assign-all", {
+                              method: "POST",
+                              token: session.accessToken,
+                            });
+                            await loadDashboard(session.accessToken);
+                          },
+                          "Daily tasks assigned to active pass users.",
+                        )
+                      }
+                    >
+                      Assign daily tasks to all active users
+                    </Button>
+                  </Stack>
+                  <TableContainer sx={{ mt: 2 }}>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>User</TableCell>
+                          <TableCell>Active pass</TableCell>
+                          <TableCell align="right">Action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {users?.items.map((user) => {
+                          const activePass = taskPasses.find((taskPass) => taskPass.userId === user.id && taskPass.status === "active");
+                          return (
+                            <TableRow key={`assign-${user.id}`} hover>
+                              <TableCell>{user.name}</TableCell>
+                              <TableCell>{activePass ? taskPassPlans.find((plan) => plan.id === activePass.planId)?.name ?? activePass.planId : "No active pass"}</TableCell>
+                              <TableCell align="right">
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  disabled={!activePass}
+                                  onClick={() =>
+                                    onAction(
+                                      `assign-user-${user.id}`,
+                                      async () => {
+                                        await request(`/admin/users/${user.id}/assign-daily-tasks`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      `${user.name} received daily tasks.`,
+                                    )
+                                  }
+                                >
+                                  Assign today
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard
+                  title="Create Daily Task"
+                  subtitle="Add a new task to the active assignment pool."
+                  action={
+                    <Button
+                      variant="contained"
+                      onClick={() =>
+                        onAction(
+                          "create-daily-task",
+                          async () => {
+                            await request("/admin/tasks", {
+                              method: "POST",
+                              token: session.accessToken,
+                              body: JSON.stringify(newDailyTask),
+                            });
+                            setNewDailyTask(createDailyTaskDraft());
+                            await loadDashboard(session.accessToken);
+                          },
+                          "Daily task created.",
+                        )
+                      }
+                    >
+                      Create task
+                    </Button>
+                  }
+                >
+                  <Stack spacing={2}>
+                    <TextField label="Title" value={newDailyTask.title} onChange={(event: ChangeEvent<HTMLInputElement>) => setNewDailyTask((current) => ({ ...current, title: event.target.value }))} />
+                    <TextField
+                      label="Description"
+                      multiline
+                      minRows={3}
+                      value={newDailyTask.description}
+                      onChange={(event: ChangeEvent<HTMLInputElement>) => setNewDailyTask((current) => ({ ...current, description: event.target.value }))}
+                    />
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                      <TextField label="Type" value={newDailyTask.type} onChange={(event: ChangeEvent<HTMLInputElement>) => setNewDailyTask((current) => ({ ...current, type: event.target.value as DailyTask["type"] }))} />
+                      <NumberField value={newDailyTask.rewardTokens} onChange={(value) => setNewDailyTask((current) => ({ ...current, rewardTokens: value }))} />
+                      <Button
+                        variant={newDailyTask.requiresApproval ? "contained" : "outlined"}
+                        onClick={() => setNewDailyTask((current) => ({ ...current, requiresApproval: !current.requiresApproval }))}
+                      >
+                        {newDailyTask.requiresApproval ? "Approval required" : "Auto approve"}
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </PanelCard>
+
+                <PanelCard title="Daily Assignments" subtitle="Inspect the latest assignment status, proof, and linked pass.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>User</TableCell>
+                          <TableCell>Task</TableCell>
+                          <TableCell>Pass</TableCell>
+                          <TableCell>Date</TableCell>
+                          <TableCell>Status</TableCell>
+                            <TableCell>Proof</TableCell>
+                            <TableCell align="right">Review</TableCell>
+                          </TableRow>
+                        </TableHead>
+                      <TableBody>
+                        {dailyAssignments.map((item) => (
+                          <TableRow key={item.assignment.id} hover>
+                            <TableCell>
+                              <Typography fontWeight={700}>{item.user?.name ?? item.assignment.userId}</Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {item.user?.phone ?? item.assignment.userId}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography fontWeight={700}>{item.task?.title ?? item.assignment.taskId}</Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {item.assignment.rewardTokens} tokens
+                              </Typography>
+                            </TableCell>
+                            <TableCell>{item.plan?.name ?? item.taskPass?.planId ?? "-"}</TableCell>
+                            <TableCell>{item.assignment.date}</TableCell>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                color={
+                                  item.assignment.status === "claimed"
+                                    ? "success"
+                                    : item.assignment.status === "rejected"
+                                      ? "error"
+                                      : item.assignment.status === "approved"
+                                        ? "info"
+                                        : "warning"
+                                }
+                                label={item.assignment.status}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="body2" color="text.secondary">
+                                {item.assignment.proof || "No proof submitted"}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  disabled={item.assignment.status !== "submitted"}
+                                  onClick={() =>
+                                    onAction(
+                                      `approve-submission-${item.assignment.id}`,
+                                      async () => {
+                                        await request(`/admin/task-submissions/${item.assignment.id}/approve`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      "Task submission approved.",
+                                    )
+                                  }
+                                >
+                                  Approve
+                                </Button>
+                                <Button
+                                  variant="outlined"
+                                  color="error"
+                                  size="small"
+                                  disabled={item.assignment.status !== "submitted"}
+                                  onClick={() =>
+                                    onAction(
+                                      `reject-submission-${item.assignment.id}`,
+                                      async () => {
+                                        await request(`/admin/task-submissions/${item.assignment.id}/reject`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                          body: JSON.stringify({ reason: "Rejected by admin review." }),
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      "Task submission rejected.",
+                                    )
+                                  }
+                                >
+                                  Reject
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Milestones" subtitle="Plan milestones unlock token rewards after required day and completed task progress.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Name</TableCell>
+                          <TableCell>Plan</TableCell>
+                          <TableCell>Required day</TableCell>
+                          <TableCell>Tasks</TableCell>
+                          <TableCell>Reward</TableCell>
+                          <TableCell>Status</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {milestones.map((milestone) => (
+                          <TableRow key={milestone.id} hover>
+                            <TableCell>{milestone.name}</TableCell>
+                            <TableCell>{taskPassPlans.find((plan) => plan.id === milestone.planId)?.name ?? milestone.planId}</TableCell>
+                            <TableCell>{milestone.requiredDay}</TableCell>
+                            <TableCell>{milestone.requiredCompletedTasks}</TableCell>
+                            <TableCell>{milestone.rewardTokens} tokens</TableCell>
+                            <TableCell>
+                              <Chip size="small" color={milestone.active ? "success" : "default"} label={milestone.active ? "active" : "disabled"} />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Token ledger" subtitle="Separate ledger for task and check-in rewards.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>User</TableCell>
+                          <TableCell>Reason</TableCell>
+                          <TableCell>Amount</TableCell>
+                          <TableCell>Balance after</TableCell>
+                          <TableCell>When</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {tokenLedger.map((entry) => (
+                          <TableRow key={entry.id} hover>
+                            <TableCell>{entry.userId}</TableCell>
+                            <TableCell>{entry.reason}</TableCell>
+                            <TableCell>{entry.direction === "credit" ? `+${entry.amount}` : `-${entry.amount}`}</TableCell>
+                            <TableCell>{entry.balanceAfter}</TableCell>
+                            <TableCell>{toDateTime(entry.createdAt)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+              </Stack>
+            ) : null}
+  
             {activeSection === "money" ? (
               <Stack spacing={3}>
                 <PanelCard title="Deposit review" subtitle="Verify or inspect incoming top-up orders.">
@@ -940,7 +2678,124 @@ function App() {
                   </TableContainer>
                 </PanelCard>
 
-                <PanelCard title="Withdrawal queue" subtitle="Approve or reject withdrawals from sold and unlocked balances only.">
+                <PanelCard title="Deposit bonus tokens" subtitle="Locked token bonuses created from qualifying deposits.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>User</TableCell>
+                          <TableCell>Deposit</TableCell>
+                          <TableCell>Bonus</TableCell>
+                          <TableCell>Unlock rule</TableCell>
+                          <TableCell>Status</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {depositBonuses.map((bonus) => (
+                          <TableRow key={bonus.id} hover>
+                            <TableCell>{bonus.userId}</TableCell>
+                            <TableCell sx={{ fontFamily: "monospace", fontSize: 13 }}>{bonus.depositId}</TableCell>
+                            <TableCell>{bonus.bonusTokens} tokens</TableCell>
+                            <TableCell>{bonus.unlockRequiredApprovedTasks} approved tasks</TableCell>
+                            <TableCell>
+                              <Chip size="small" color={bonus.status === "credited" ? "success" : "warning"} label={bonus.status} />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Token redemptions" subtitle="Cash payout requests created from token balance.">
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>User</TableCell>
+                          <TableCell>Tokens</TableCell>
+                          <TableCell>Value</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {redemptions.map((requestItem) => (
+                          <TableRow key={requestItem.id} hover>
+                            <TableCell>{requestItem.userId}</TableCell>
+                            <TableCell>{requestItem.tokens}</TableCell>
+                            <TableCell>{toCurrency(requestItem.valueAmount)}</TableCell>
+                            <TableCell>
+                              <Chip size="small" color={requestItem.status === "paid" ? "success" : requestItem.status === "rejected" ? "error" : "warning"} label={requestItem.status} />
+                            </TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  disabled={requestItem.status !== "pending"}
+                                  onClick={() =>
+                                    onAction(
+                                      `redemption-approve-${requestItem.id}`,
+                                      async () => {
+                                        await request(`/admin/redemptions/${requestItem.id}/approve`, { method: "POST", token: session.accessToken });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      "Redemption approved.",
+                                    )
+                                  }
+                                >
+                                  Approve
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  disabled={requestItem.status !== "approved"}
+                                  onClick={() =>
+                                    onAction(
+                                      `redemption-paid-${requestItem.id}`,
+                                      async () => {
+                                        await request(`/admin/redemptions/${requestItem.id}/mark-paid`, { method: "POST", token: session.accessToken });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      "Redemption marked paid.",
+                                    )
+                                  }
+                                >
+                                  Mark paid
+                                </Button>
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="outlined"
+                                  disabled={requestItem.status !== "pending"}
+                                  onClick={() =>
+                                    onAction(
+                                      `redemption-reject-${requestItem.id}`,
+                                      async () => {
+                                        await request(`/admin/redemptions/${requestItem.id}/reject`, {
+                                          method: "POST",
+                                          token: session.accessToken,
+                                          body: JSON.stringify({ reason: "Rejected by admin review." }),
+                                        });
+                                        await loadDashboard(session.accessToken);
+                                      },
+                                      "Redemption rejected.",
+                                    )
+                                  }
+                                >
+                                  Reject
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </PanelCard>
+
+                <PanelCard title="Withdrawal queue" subtitle="Approve or reject cash wallet payout requests.">
                   <TableContainer>
                     <Table>
                       <TableHead>

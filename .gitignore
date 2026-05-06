@@ -14,7 +14,7 @@ coverage/
 *.png
 *.xml
 
-app/
+/app/
 classes_dexdump.txt
 uonohub_apk_extract/
 uonohub-activity.txt

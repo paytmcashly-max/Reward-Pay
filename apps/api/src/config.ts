@@ -32,6 +32,8 @@ const configSchema = z.object({
   MSG91_TEMPLATE_ID: z.string().optional(),
   ENABLE_INVITE_LOGIN: envBoolean.default(false),
   INVITE_CODE: z.string().optional(),
+  TASK_PASS_ENABLED: envBoolean.default(false),
+  TOKEN_REDEMPTION_ENABLED: envBoolean.default(false),
   DATABASE_URL: z.string().optional(),
   REDIS_URL: z.string().optional(),
   STATE_FILE_PATH: z.string().optional(),

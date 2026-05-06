@@ -31,8 +31,9 @@ const adminLoginSchema = z.object({
 });
 
 const createDepositSchema = z.object({
-  amount: z.number().min(100),
+  amount: z.number().positive(),
   provider: z.enum(["cashfree", "mock"]).default("cashfree"),
+  taskPassPlanId: z.string().optional(),
 });
 
 const beneficiarySchema = z.object({
@@ -96,10 +97,108 @@ const matchingSchema = z.object({
   paused: z.boolean(),
 });
 
+const taskPassActivationRequestSchema = z.object({
+  planId: z.string().min(1),
+  paymentReference: z.string().optional(),
+});
+
+const taskPassPlanSchema = z.object({
+  name: z.string().min(2),
+  durationDays: z.number().int().positive(),
+  dailyTaskMin: z.number().int().positive(),
+  dailyTaskMax: z.number().int().positive(),
+  dailyTokenCap: z.number().positive(),
+  targetTokens: z.number().nonnegative(),
+  priceAmount: z.number().nonnegative(),
+  currency: z.string().min(3),
+  active: z.boolean(),
+});
+
+const dailyTaskSchema = z.object({
+  title: z.string().min(2),
+  description: z.string().min(2),
+  type: z.enum(["checkin", "manual", "quiz", "proof_upload", "link_visit", "ad_watch"]),
+  rewardTokens: z.number().positive(),
+  requiresApproval: z.boolean(),
+  active: z.boolean(),
+});
+
+const submitTaskSchema = z.object({
+  proof: z.string().optional(),
+});
+
+const milestoneSchema = z.object({
+  planId: z.string().min(1),
+  name: z.string().min(2),
+  requiredDay: z.number().int().positive(),
+  requiredCompletedTasks: z.number().int().nonnegative(),
+  rewardTokens: z.number().positive(),
+  active: z.boolean(),
+});
+
+const depositBonusRuleSchema = z.object({
+  minDepositAmount: z.number().nonnegative(),
+  bonusPercent: z.number().nonnegative(),
+  maxBonusTokens: z.number().nonnegative(),
+  unlockRequiredApprovedTasks: z.number().int().nonnegative(),
+  active: z.boolean(),
+});
+
+const referralCommissionRuleSchema = z.object({
+  trigger: z.enum(["referred_task_completed", "referred_milestone_completed", "referred_deposit_approved"]),
+  rewardType: z.enum(["fixed_tokens", "percent_tokens", "percent_deposit_bonus"]),
+  rewardValue: z.number().nonnegative(),
+  maxRewardTokens: z.number().nonnegative().optional(),
+  requiredTaskId: z.string().optional(),
+  requiredMilestoneId: z.string().optional(),
+  active: z.boolean(),
+});
+
+const redemptionRequestSchema = z.object({
+  tokens: z.number().positive(),
+  payoutMethod: z.enum(["manual", "voucher", "bank", "upi"]),
+  note: z.string().optional(),
+});
+
 const paginationSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(20),
 });
+
+const validationFieldLabels: Record<string, string> = {
+  phone: "Phone number",
+  code: "OTP code",
+  inviteCode: "Invite code",
+  name: "Name",
+  referralCode: "Referral code",
+  amount: "Amount",
+  password: "Password",
+  beneficiaryId: "Payout account",
+  tokens: "Tokens",
+  payoutMethod: "Payout method",
+};
+
+const friendlyValidationMessage = (issue: z.ZodIssue) => {
+  const field = issue.path.join(".");
+  const label = validationFieldLabels[field] ?? validationFieldLabels[issue.path.at(-1)?.toString() ?? ""] ?? "This field";
+
+  if (issue.code === "invalid_type") {
+    return `${label} is required.`;
+  }
+
+  if (issue.code === "too_small") {
+    if (field === "phone") return "Enter a valid phone number.";
+    if (field === "inviteCode") return "Invite code is required.";
+    if (field === "code") return "Enter the OTP code.";
+    return `${label} is too short.`;
+  }
+
+  if (issue.code === "invalid_enum_value") {
+    return `${label} has an unsupported value.`;
+  }
+
+  return "Please check the details and try again.";
+};
 
 const userHeader = "x-user-id";
 const adminHeader = "x-admin-id";
@@ -297,7 +396,7 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
     <main class="card">
       <h1>Payment submitted</h1>
       <p>Go back to the app and tap <strong>Sync</strong> on the deposit card to refresh the payment status.</p>
-      <p>If the payment is already completed, the order will move from pending into your reward-and-listing flow.</p>
+      <p>If the payment is already completed, the order will move from pending into your cash wallet or Task Pass purchase flow.</p>
       <code>Deposit ID: ${options.depositId}${options.orderId ? `\nOrder ID: ${options.orderId}` : ""}</code>
       <a class="button" href="javascript:window.history.back()">Go back</a>
     </main>
@@ -470,7 +569,7 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
     "/deposits",
     asyncRoute(async (req, res) => {
       const body = createDepositSchema.parse(req.body);
-      res.status(201).json(await engine.createDeposit(getUserId(req), body.amount, body.provider));
+      res.status(201).json(await engine.createDeposit(getUserId(req), body.amount, body.provider, body.taskPassPlanId));
     }),
   );
 
@@ -640,6 +739,121 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
   );
 
   app.get(
+    "/task-pass/plans",
+    asyncRoute(async (_req, res) => {
+      res.json(engine.listTaskPassPlans());
+    }),
+  );
+
+  app.post(
+    "/task-pass/activate-request",
+    asyncRoute(async (req, res) => {
+      const body = taskPassActivationRequestSchema.parse(req.body);
+      res.status(201).json(await engine.requestTaskPassActivation(getUserId(req), body.planId, body.paymentReference));
+    }),
+  );
+
+  app.get(
+    "/task-pass/me",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getCurrentTaskPass(getUserId(req)));
+    }),
+  );
+
+  app.get(
+    "/daily",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getDailyOverview(getUserId(req)));
+    }),
+  );
+
+  app.post(
+    "/daily/check-in",
+    asyncRoute(async (req, res) => {
+      res.status(201).json(await engine.claimDailyCheckIn(getUserId(req)));
+    }),
+  );
+
+  app.get(
+    "/daily/tasks",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getDailyTasks(getUserId(req)));
+    }),
+  );
+
+  app.post(
+    "/daily/tasks/:assignmentId/start",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.startDailyTask(getUserId(req), routeParam(req.params.assignmentId)));
+    }),
+  );
+
+  app.post(
+    "/daily/tasks/:assignmentId/submit",
+    asyncRoute(async (req, res) => {
+      const body = submitTaskSchema.parse(req.body ?? {});
+      res.json(await engine.submitDailyTask(getUserId(req), routeParam(req.params.assignmentId), body.proof));
+    }),
+  );
+
+  app.post(
+    "/daily/tasks/:assignmentId/claim",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.claimDailyTask(getUserId(req), routeParam(req.params.assignmentId)));
+    }),
+  );
+
+  app.get(
+    "/tokens/balance",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getTokenBalance(getUserId(req)));
+    }),
+  );
+
+  app.get(
+    "/tokens/ledger",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getTokenLedger(getUserId(req)));
+    }),
+  );
+
+  app.get(
+    "/milestones/me",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getMilestoneViews(getUserId(req)));
+    }),
+  );
+
+  app.post(
+    "/milestones/:id/claim",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.claimMilestone(getUserId(req), routeParam(req.params.id)));
+    }),
+  );
+
+  app.get(
+    "/bonuses/me",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getDepositBonuses(getUserId(req)));
+    }),
+  );
+
+  app.get(
+    "/redemptions/me",
+    asyncRoute(async (req, res) => {
+      res.json(engine.getRedemptions(getUserId(req)));
+    }),
+  );
+
+  app.post(
+    "/redemptions",
+    asyncRoute(async (req, res) => {
+      const body = redemptionRequestSchema.parse(req.body);
+      res.status(201).json(await engine.createRedemptionRequest(getUserId(req), body.tokens, body.payoutMethod, body.note));
+    }),
+  );
+
+  app.get(
     "/admin/users",
     asyncRoute(async (req, res) => {
       const pagination = getPagination(req);
@@ -653,6 +867,254 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
     asyncRoute(async (req, res) => {
       const body = blockUserSchema.parse(req.body);
       res.json(await engine.setUserBlocked(routeParam(req.params.id), body.blocked, getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/task-pass-plans",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listTaskPassPlans());
+    }),
+  );
+
+  app.post(
+    "/admin/task-pass-plans",
+    asyncRoute(async (req, res) => {
+      const body = taskPassPlanSchema.parse(req.body);
+      res.status(201).json(await engine.createTaskPassPlan(body, getAdminId(req)));
+    }),
+  );
+
+  app.patch(
+    "/admin/task-pass-plans/:id",
+    asyncRoute(async (req, res) => {
+      const body = taskPassPlanSchema.partial().parse(req.body);
+      res.json(await engine.updateTaskPassPlan(routeParam(req.params.id), body, getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/task-passes",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listTaskPasses());
+    }),
+  );
+
+  app.post(
+    "/admin/task-passes/:id/activate",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.activateTaskPass(routeParam(req.params.id), getAdminId(req)));
+    }),
+  );
+
+  app.post(
+    "/admin/task-passes/:id/cancel",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.cancelTaskPass(routeParam(req.params.id), getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/tasks",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listDailyTasks());
+    }),
+  );
+
+  app.post(
+    "/admin/tasks",
+    asyncRoute(async (req, res) => {
+      const body = dailyTaskSchema.parse(req.body);
+      res.status(201).json(await engine.createDailyTask(body, getAdminId(req)));
+    }),
+  );
+
+  app.patch(
+    "/admin/tasks/:id",
+    asyncRoute(async (req, res) => {
+      const body = dailyTaskSchema.partial().parse(req.body);
+      res.json(await engine.updateDailyTask(routeParam(req.params.id), body, getAdminId(req)));
+    }),
+  );
+
+  app.post(
+    "/admin/tasks/:id/disable",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.disableDailyTask(routeParam(req.params.id), getAdminId(req)));
+    }),
+  );
+
+  app.post(
+    "/admin/users/:userId/assign-daily-tasks",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.assignDailyTasksForUser(routeParam(req.params.userId), getAdminId(req)));
+    }),
+  );
+
+  app.post(
+    "/admin/daily/assign-all",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.assignDailyTasksForAll(getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/daily-assignments",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listAdminDailyAssignments());
+    }),
+  );
+
+  app.get(
+    "/admin/task-submissions",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listAdminTaskSubmissions());
+    }),
+  );
+
+  app.post(
+    "/admin/task-submissions/:id/approve",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.approveTaskSubmission(routeParam(req.params.id), getAdminId(req)));
+    }),
+  );
+
+  app.post(
+    "/admin/task-submissions/:id/reject",
+    asyncRoute(async (req, res) => {
+      const body = rejectSchema.parse(req.body);
+      res.json(await engine.rejectTaskSubmission(routeParam(req.params.id), getAdminId(req), body.reason));
+    }),
+  );
+
+  app.get(
+    "/admin/token-ledger",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.getAdminTokenLedger());
+    }),
+  );
+
+  app.get(
+    "/admin/milestones",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listMilestones());
+    }),
+  );
+
+  app.post(
+    "/admin/milestones",
+    asyncRoute(async (req, res) => {
+      const body = milestoneSchema.parse(req.body);
+      res.status(201).json(await engine.createMilestone(body, getAdminId(req)));
+    }),
+  );
+
+  app.patch(
+    "/admin/milestones/:id",
+    asyncRoute(async (req, res) => {
+      const body = milestoneSchema.partial().parse(req.body);
+      res.json(await engine.updateMilestone(routeParam(req.params.id), body, getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/deposit-bonus-rules",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listDepositBonusRules());
+    }),
+  );
+
+  app.post(
+    "/admin/deposit-bonus-rules",
+    asyncRoute(async (req, res) => {
+      const body = depositBonusRuleSchema.parse(req.body);
+      res.status(201).json(await engine.createDepositBonusRule(body, getAdminId(req)));
+    }),
+  );
+
+  app.patch(
+    "/admin/deposit-bonus-rules/:id",
+    asyncRoute(async (req, res) => {
+      const body = depositBonusRuleSchema.partial().parse(req.body);
+      res.json(await engine.updateDepositBonusRule(routeParam(req.params.id), body, getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/deposit-bonuses",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(Array.from(engine.store.depositBonuses.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    }),
+  );
+
+  app.get(
+    "/admin/referral-commission-rules",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listReferralCommissionRules());
+    }),
+  );
+
+  app.post(
+    "/admin/referral-commission-rules",
+    asyncRoute(async (req, res) => {
+      const body = referralCommissionRuleSchema.parse(req.body);
+      res.status(201).json(await engine.createReferralCommissionRule(body, getAdminId(req)));
+    }),
+  );
+
+  app.patch(
+    "/admin/referral-commission-rules/:id",
+    asyncRoute(async (req, res) => {
+      const body = referralCommissionRuleSchema.partial().parse(req.body);
+      res.json(await engine.updateReferralCommissionRule(routeParam(req.params.id), body, getAdminId(req)));
+    }),
+  );
+
+  app.get(
+    "/admin/referral-commissions",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listReferralCommissions());
+    }),
+  );
+
+  app.get(
+    "/admin/redemptions",
+    asyncRoute(async (req, res) => {
+      getAdminId(req);
+      res.json(engine.listAdminRedemptions());
+    }),
+  );
+
+  app.post(
+    "/admin/redemptions/:id/approve",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.approveRedemption(routeParam(req.params.id), getAdminId(req)));
+    }),
+  );
+
+  app.post(
+    "/admin/redemptions/:id/reject",
+    asyncRoute(async (req, res) => {
+      const body = rejectSchema.parse(req.body);
+      res.json(await engine.rejectRedemption(routeParam(req.params.id), getAdminId(req), body.reason));
+    }),
+  );
+
+  app.post(
+    "/admin/redemptions/:id/mark-paid",
+    asyncRoute(async (req, res) => {
+      res.json(await engine.markRedemptionPaid(routeParam(req.params.id), getAdminId(req)));
     }),
   );
 
@@ -801,6 +1263,21 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
         code: error.code,
         message: error.message,
         details: error.details,
+      });
+      return;
+    }
+
+    if (error instanceof z.ZodError) {
+      const firstIssue = error.issues[0];
+      res.status(400).json({
+        code: "validation_error",
+        message: firstIssue ? friendlyValidationMessage(firstIssue) : "Please check the details and try again.",
+        details: {
+          issues: error.issues.map((issue) => ({
+            field: issue.path.join("."),
+            message: friendlyValidationMessage(issue),
+          })),
+        },
       });
       return;
     }

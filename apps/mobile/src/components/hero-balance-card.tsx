@@ -20,8 +20,8 @@ export function HeroBalanceCard({ wallet }: HeroBalanceCardProps) {
 
   const metricCards = [
     { label: "Reward", value: wallet.rewardBalance, bg: "#f5c24f22", border: "#f5c24f40" },
-    { label: "Sold", value: wallet.soldBalance, bg: "#34b27b1f", border: "#34b27b3b" },
-    { label: "Listed", value: wallet.listedBalance, bg: "#7a9fff1f", border: "#7a9fff3b" },
+    { label: "Cash", value: wallet.principalBalance, bg: "#34b27b1f", border: "#34b27b3b" },
+    { label: "Available", value: wallet.withdrawableBalance, bg: "#7a9fff1f", border: "#7a9fff3b" },
     { label: "Locked", value: wallet.lockedBalance, bg: "#ffffff10", border: "#ffffff1e" },
   ];
 

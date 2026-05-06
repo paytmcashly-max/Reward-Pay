@@ -2,11 +2,23 @@ import type {
   ApiError,
   AuthSession,
   ChunkBucket,
+  DailyCheckIn,
+  DailyOverview,
+  DailyTask,
+  DepositBonus,
   DepositOrder,
   GameDefinition,
+  RedemptionPayoutMethod,
+  RedemptionRequest,
   ReferralSummary,
+  UserMilestoneView,
   RewardRule,
+  TaskPassPlan,
+  TokenBalanceSummary,
+  TokenTransaction,
   User,
+  UserDailyTaskAssignment,
+  UserTaskPass,
   WalletOverview,
   WalletSummary,
   WalletTransaction,
@@ -94,8 +106,32 @@ export const apiClient = {
   getRewardRules: () => request<RewardRule[]>("/config/reward-rules"),
   getChunkBuckets: () => request<ChunkBucket[]>("/config/chunk-buckets"),
   getProviderStatus: () => request<ProviderStatus>("/health/providers"),
-  createDeposit: (token: string, amount: number, provider: "cashfree" | "mock") =>
-    request<DepositOrder>("/deposits", { method: "POST", token, body: { amount, provider } }),
+  getTaskPassPlans: () => request<TaskPassPlan[]>("/task-pass/plans"),
+  requestTaskPassActivation: (token: string, input: { planId: string; paymentReference?: string }) =>
+    request<UserTaskPass>("/task-pass/activate-request", { method: "POST", token, body: input }),
+  getMyTaskPass: (token: string) =>
+    request<{ taskPass: UserTaskPass | null; plan: TaskPassPlan | null }>("/task-pass/me", { token }),
+  getDailyOverview: (token: string) => request<DailyOverview>("/daily", { token }),
+  claimDailyCheckIn: (token: string) => request<DailyCheckIn>("/daily/check-in", { method: "POST", token }),
+  getDailyTasks: (token: string) =>
+    request<Array<{ assignment: UserDailyTaskAssignment; task: DailyTask }>>("/daily/tasks", { token }),
+  startDailyTask: (token: string, assignmentId: string) =>
+    request<UserDailyTaskAssignment>(`/daily/tasks/${assignmentId}/start`, { method: "POST", token }),
+  submitDailyTask: (token: string, assignmentId: string, proof?: string) =>
+    request<UserDailyTaskAssignment>(`/daily/tasks/${assignmentId}/submit`, { method: "POST", token, body: { proof } }),
+  claimDailyTask: (token: string, assignmentId: string) =>
+    request<UserDailyTaskAssignment>(`/daily/tasks/${assignmentId}/claim`, { method: "POST", token }),
+  getTokenBalance: (token: string) => request<TokenBalanceSummary>("/tokens/balance", { token }),
+  getTokenLedger: (token: string) => request<TokenTransaction[]>("/tokens/ledger", { token }),
+  getMilestones: (token: string) => request<UserMilestoneView[]>("/milestones/me", { token }),
+  claimMilestone: (token: string, milestoneId: string) =>
+    request<unknown>(`/milestones/${milestoneId}/claim`, { method: "POST", token }),
+  getBonuses: (token: string) => request<DepositBonus[]>("/bonuses/me", { token }),
+  getRedemptions: (token: string) => request<RedemptionRequest[]>("/redemptions/me", { token }),
+  createRedemption: (token: string, input: { tokens: number; payoutMethod: RedemptionPayoutMethod; note?: string }) =>
+    request<RedemptionRequest>("/redemptions", { method: "POST", token, body: input }),
+  createDeposit: (token: string, amount: number, provider: "cashfree" | "mock", taskPassPlanId?: string) =>
+    request<DepositOrder>("/deposits", { method: "POST", token, body: { amount, provider, taskPassPlanId } }),
   createBeneficiary: (
     token: string,
     input: Omit<WithdrawBeneficiary, "id" | "userId" | "createdAt">,

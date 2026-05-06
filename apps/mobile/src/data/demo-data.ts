@@ -9,11 +9,11 @@ import type {
 
 export const demoWallet: WalletSummary = {
   userId: "6206319",
-  principalBalance: 180,
+  principalBalance: 800,
   rewardBalance: 260,
-  listedBalance: 1240,
-  soldBalance: 620,
-  withdrawableBalance: 620,
+  listedBalance: 0,
+  soldBalance: 0,
+  withdrawableBalance: 800,
   lockedBalance: 90,
   updatedAt: new Date().toISOString(),
 };
@@ -23,6 +23,26 @@ export const demoReferral: ReferralSummary = {
   totalReferredUsers: 18,
   rewardedReferrals: 11,
   totalRewardAmount: 940,
+  totalCommissionTokens: 940,
+  pendingCommissionTokens: 120,
+  commissionNote: "Commission is credited only after the referred user completes the required task or milestone.",
+  referrals: [
+    {
+      userId: "6203001",
+      name: "Aarav",
+      joinedAt: new Date().toISOString(),
+      status: "credited",
+      rewardTokens: 50,
+    },
+    {
+      userId: "6203002",
+      name: "Priya",
+      joinedAt: new Date().toISOString(),
+      status: "joined",
+      rewardTokens: 0,
+    },
+  ],
+  commissions: [],
 };
 
 export const demoRewardRules: RewardRule[] = [
@@ -68,9 +88,9 @@ export const demoTransactions: WalletTransaction[] = [
   {
     id: "txn_1",
     userId: "6206319",
-    type: "chunk_match",
+    type: "task_pass_purchase",
     amount: 220,
-    metadata: { note: "Demand pool fill", bucket: "200-500" },
+    metadata: { note: "Starter Pass payment", plan: "Starter Pass" },
     createdAt: "2026-05-04T09:35:00.000Z",
   },
   {
@@ -84,9 +104,9 @@ export const demoTransactions: WalletTransaction[] = [
   {
     id: "txn_3",
     userId: "6206319",
-    type: "chunk_listed",
-    amount: 1000,
-    metadata: { note: "Auto-sell listing", chunks: 4 },
+    type: "deposit_principal",
+    amount: 500,
+    metadata: { note: "Demo balance top-up", provider: "SandboxPay" },
     createdAt: "2026-05-04T08:40:00.000Z",
   },
   {

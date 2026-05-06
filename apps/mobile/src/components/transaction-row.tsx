@@ -11,6 +11,7 @@ type TransactionRowProps = {
 const toneByType: Record<WalletTransaction["type"], string> = {
   deposit_principal: colors.blue,
   reward_credit: colors.green,
+  task_pass_purchase: colors.green,
   chunk_listed: colors.goldDeep,
   chunk_match: colors.green,
   withdraw_request: colors.coral,

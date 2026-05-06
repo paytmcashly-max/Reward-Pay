@@ -2,20 +2,33 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type {
   AdminAuditLog,
+  DepositBonus,
+  DepositBonusRule,
   BeneficiaryType,
   ChunkBucket,
+  DailyCheckIn,
+  DailyTask,
   DemandPool,
   DepositOrder,
   DepositProviderEvent,
   DepositStatus,
   GameDefinition,
   PaymentProvider,
+  RedemptionRequest,
+  ReferralCommission,
+  ReferralCommissionRule,
   ReferralSummary,
+  RewardMilestone,
   RewardRule,
   SellOrder,
   SellOrderChunk,
+  TaskPassPlan,
+  TokenTransaction,
   TradeMatch,
   User,
+  UserDailyTaskAssignment,
+  UserMilestoneProgress,
+  UserTaskPass,
   WalletAccount,
   WalletTransaction,
   WalletTransactionType,
@@ -49,6 +62,19 @@ export class InMemoryStore {
   users = new Map<string, User>();
   wallets = new Map<string, WalletAccount>();
   walletTransactions: WalletTransaction[] = [];
+  taskPassPlans = new Map<string, TaskPassPlan>();
+  userTaskPasses = new Map<string, UserTaskPass>();
+  dailyTasks = new Map<string, DailyTask>();
+  userDailyTaskAssignments = new Map<string, UserDailyTaskAssignment>();
+  dailyCheckIns: DailyCheckIn[] = [];
+  tokenTransactions: TokenTransaction[] = [];
+  rewardMilestones = new Map<string, RewardMilestone>();
+  userMilestoneProgresses = new Map<string, UserMilestoneProgress>();
+  referralCommissionRules = new Map<string, ReferralCommissionRule>();
+  referralCommissions = new Map<string, ReferralCommission>();
+  depositBonusRules = new Map<string, DepositBonusRule>();
+  depositBonuses = new Map<string, DepositBonus>();
+  redemptionRequests = new Map<string, RedemptionRequest>();
   depositOrders = new Map<string, DepositOrder>();
   depositProviderEvents: DepositProviderEvent[] = [];
   rewardRules = new Map<string, RewardRule>();
@@ -90,6 +116,29 @@ export class InMemoryStore {
     this.seedRewardRules();
     this.seedChunkBuckets();
     this.seedDemandPools();
+    this.seedTaskPassPlans();
+    this.seedDailyTasks();
+    this.seedMilestones();
+    this.seedReferralCommissionRules();
+    this.seedDepositBonusRules();
+  }
+
+  protected ensureTaskPassSeedData() {
+    if (!this.taskPassPlans.size) {
+      this.seedTaskPassPlans();
+    }
+    if (!this.dailyTasks.size) {
+      this.seedDailyTasks();
+    }
+    if (!this.rewardMilestones.size) {
+      this.seedMilestones();
+    }
+    if (!this.referralCommissionRules.size) {
+      this.seedReferralCommissionRules();
+    }
+    if (!this.depositBonusRules.size) {
+      this.seedDepositBonusRules();
+    }
   }
 
   async initialize() {
@@ -145,6 +194,28 @@ export class InMemoryStore {
     return transaction;
   }
 
+  addTokenTransaction(
+    userId: string,
+    amount: number,
+    direction: TokenTransaction["direction"],
+    reason: TokenTransaction["reason"],
+    referenceId: string,
+    balanceAfter: number,
+  ) {
+    const transaction: TokenTransaction = {
+      id: id("token_txn"),
+      userId,
+      amount,
+      direction,
+      reason,
+      referenceId,
+      balanceAfter,
+      createdAt: now(),
+    };
+    this.tokenTransactions.unshift(transaction);
+    return transaction;
+  }
+
   addDepositProviderEvent(
     depositOrderId: string,
     provider: DepositProviderEvent["provider"],
@@ -195,6 +266,27 @@ export class InMemoryStore {
     return Array.from(this.sellOrders.values()).find((sellOrder) => sellOrder.depositOrderId === depositOrderId);
   }
 
+  findActiveTaskPass(userId: string, referenceDate = now()) {
+    const active = Array.from(this.userTaskPasses.values())
+      .filter(
+        (taskPass) =>
+          taskPass.userId === userId &&
+          taskPass.status === "active" &&
+          taskPass.startsAt &&
+          taskPass.endsAt &&
+          taskPass.startsAt <= referenceDate &&
+          taskPass.endsAt >= referenceDate,
+      )
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return active[0];
+  }
+
+  findAssignmentsForUserDate(userId: string, date: string) {
+    return Array.from(this.userDailyTaskAssignments.values()).filter(
+      (assignment) => assignment.userId === userId && assignment.date === date,
+    );
+  }
+
   getChunkBuckets(): ChunkBucket[] {
     return Array.from(this.rewardChunkBuckets.values());
   }
@@ -209,12 +301,45 @@ export class InMemoryStore {
     const totalRewardAmount = this.walletTransactions
       .filter((txn) => txn.userId === userId && txn.metadata.reason === "referral")
       .reduce((sum, txn) => sum + txn.amount, 0);
+    const commissions = Array.from(this.referralCommissions.values())
+      .filter((commission) => commission.referrerUserId === userId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const totalCommissionTokens = commissions
+      .filter((commission) => commission.status === "credited")
+      .reduce((sum, commission) => sum + commission.rewardTokens, 0);
+    const pendingCommissionTokens = commissions
+      .filter((commission) => commission.status === "pending")
+      .reduce((sum, commission) => sum + commission.rewardTokens, 0);
+    const referrals = referredUsers
+      .map((referredUser) => {
+        const userCommissions = commissions.filter((commission) => commission.referredUserId === referredUser.id);
+        const creditedTokens = userCommissions
+          .filter((commission) => commission.status === "credited")
+          .reduce((sum, commission) => sum + commission.rewardTokens, 0);
+        const pendingTokens = userCommissions
+          .filter((commission) => commission.status === "pending")
+          .reduce((sum, commission) => sum + commission.rewardTokens, 0);
+
+        return {
+          userId: referredUser.id,
+          name: referredUser.name,
+          joinedAt: referredUser.createdAt,
+          status: creditedTokens > 0 ? "credited" : pendingTokens > 0 ? "qualified" : "joined",
+          rewardTokens: creditedTokens || pendingTokens,
+        } satisfies ReferralSummary["referrals"][number];
+      })
+      .sort((a, b) => b.joinedAt.localeCompare(a.joinedAt));
 
     return {
       code: user.referralCode,
       totalReferredUsers: referredUsers.length,
-      rewardedReferrals: referredUsers.filter((candidate) => candidate.createdAt).length,
+      rewardedReferrals: commissions.filter((commission) => commission.status === "credited").length,
       totalRewardAmount,
+      totalCommissionTokens,
+      pendingCommissionTokens,
+      commissionNote: "Commission is credited only after the referred user completes the required task or milestone.",
+      referrals,
+      commissions,
     };
   }
 
@@ -275,6 +400,44 @@ export class InMemoryStore {
             ? mapping.get(transaction.metadata.referredUserId) ?? transaction.metadata.referredUserId
             : transaction.metadata.referredUserId,
       },
+    }));
+
+    this.userTaskPasses = new Map(
+      Array.from(this.userTaskPasses.values()).map((taskPass) => {
+        const nextUserId = mapping.get(taskPass.userId) ?? taskPass.userId;
+        return [
+          taskPass.id,
+          {
+            ...taskPass,
+            userId: nextUserId,
+            activatedByAdminId:
+              taskPass.activatedByAdminId ? mapping.get(taskPass.activatedByAdminId) ?? taskPass.activatedByAdminId : undefined,
+          },
+        ];
+      }),
+    );
+
+    this.userDailyTaskAssignments = new Map(
+      Array.from(this.userDailyTaskAssignments.values()).map((assignment) => {
+        const nextUserId = mapping.get(assignment.userId) ?? assignment.userId;
+        return [
+          assignment.id,
+          {
+            ...assignment,
+            userId: nextUserId,
+          },
+        ];
+      }),
+    );
+
+    this.dailyCheckIns = this.dailyCheckIns.map((checkIn) => ({
+      ...checkIn,
+      userId: mapping.get(checkIn.userId) ?? checkIn.userId,
+    }));
+
+    this.tokenTransactions = this.tokenTransactions.map((transaction) => ({
+      ...transaction,
+      userId: mapping.get(transaction.userId) ?? transaction.userId,
     }));
 
     this.depositOrders = new Map(
@@ -409,12 +572,265 @@ export class InMemoryStore {
       this.demandPools.set(pool.id, pool);
     }
   }
+
+  protected seedTaskPassPlans() {
+    const createdAt = now();
+    const plans: TaskPassPlan[] = [
+      {
+        id: "pass_starter",
+        name: "Starter Pass",
+        durationDays: 7,
+        dailyTaskMin: 2,
+        dailyTaskMax: 3,
+        dailyTokenCap: 60,
+        targetTokens: 300,
+        priceAmount: 49,
+        currency: "INR",
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "pass_growth",
+        name: "Growth Pass",
+        durationDays: 12,
+        dailyTaskMin: 3,
+        dailyTaskMax: 5,
+        dailyTokenCap: 100,
+        targetTokens: 500,
+        priceAmount: 149,
+        currency: "INR",
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "pass_plus",
+        name: "Plus Pass",
+        durationDays: 21,
+        dailyTaskMin: 4,
+        dailyTaskMax: 6,
+        dailyTokenCap: 160,
+        targetTokens: 1000,
+        priceAmount: 349,
+        currency: "INR",
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "pass_pro",
+        name: "Pro Pass",
+        durationDays: 30,
+        dailyTaskMin: 5,
+        dailyTaskMax: 8,
+        dailyTokenCap: 250,
+        targetTokens: 2000,
+        priceAmount: 599,
+        currency: "INR",
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+
+    for (const plan of plans) {
+      this.taskPassPlans.set(plan.id, plan);
+    }
+  }
+
+  protected seedDailyTasks() {
+    const createdAt = now();
+    const tasks: DailyTask[] = [
+      {
+        id: "task_checkin",
+        title: "Daily Check-in",
+        description: "Open the app and claim your daily attendance reward.",
+        type: "checkin",
+        rewardTokens: 10,
+        requiresApproval: false,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "task_link_visit",
+        title: "Visit Link",
+        description: "Open the assigned link and return to the app.",
+        type: "link_visit",
+        rewardTokens: 20,
+        requiresApproval: false,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "task_proof_upload",
+        title: "Submit Proof",
+        description: "Upload proof for the assigned task.",
+        type: "proof_upload",
+        rewardTokens: 30,
+        requiresApproval: true,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "task_quiz",
+        title: "Quiz Task",
+        description: "Complete the short daily quiz.",
+        type: "quiz",
+        rewardTokens: 20,
+        requiresApproval: false,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "task_ad_watch",
+        title: "Watch Ad Placeholder",
+        description: "Placeholder task for daily watch flow.",
+        type: "ad_watch",
+        rewardTokens: 10,
+        requiresApproval: false,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+
+    for (const task of tasks) {
+      this.dailyTasks.set(task.id, task);
+    }
+  }
+
+  protected seedMilestones() {
+    const createdAt = now();
+    const milestones: RewardMilestone[] = [
+      {
+        id: "milestone_starter_day3",
+        planId: "pass_starter",
+        name: "Starter Day 3",
+        requiredDay: 3,
+        requiredCompletedTasks: 6,
+        rewardTokens: 50,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "milestone_starter_day7",
+        planId: "pass_starter",
+        name: "Starter Day 7",
+        requiredDay: 7,
+        requiredCompletedTasks: 18,
+        rewardTokens: 300,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "milestone_growth_day5",
+        planId: "pass_growth",
+        name: "Growth Day 5",
+        requiredDay: 5,
+        requiredCompletedTasks: 15,
+        rewardTokens: 100,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "milestone_growth_day12",
+        planId: "pass_growth",
+        name: "Growth Day 12",
+        requiredDay: 12,
+        requiredCompletedTasks: 45,
+        rewardTokens: 500,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+
+    for (const milestone of milestones) {
+      this.rewardMilestones.set(milestone.id, milestone);
+    }
+  }
+
+  protected seedReferralCommissionRules() {
+    const createdAt = now();
+    const rule: ReferralCommissionRule = {
+      id: "referral_rule_default",
+      trigger: "referred_milestone_completed",
+      rewardType: "fixed_tokens",
+      rewardValue: 50,
+      maxRewardTokens: 50,
+      active: true,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.referralCommissionRules.set(rule.id, rule);
+  }
+
+  protected seedDepositBonusRules() {
+    const createdAt = now();
+    const rules: DepositBonusRule[] = [
+      {
+        id: "bonus_rule_500",
+        minDepositAmount: 500,
+        bonusPercent: 2,
+        maxBonusTokens: 100,
+        unlockRequiredApprovedTasks: 3,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "bonus_rule_1000",
+        minDepositAmount: 1000,
+        bonusPercent: 3,
+        maxBonusTokens: 250,
+        unlockRequiredApprovedTasks: 5,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: "bonus_rule_5000",
+        minDepositAmount: 5000,
+        bonusPercent: 5,
+        maxBonusTokens: 1000,
+        unlockRequiredApprovedTasks: 10,
+        active: true,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+
+    for (const rule of rules) {
+      this.depositBonusRules.set(rule.id, rule);
+    }
+  }
 }
 
 type SerializedStoreState = {
   users: User[];
   wallets: WalletAccount[];
   walletTransactions: WalletTransaction[];
+  taskPassPlans: TaskPassPlan[];
+  userTaskPasses: UserTaskPass[];
+  dailyTasks: DailyTask[];
+  userDailyTaskAssignments: UserDailyTaskAssignment[];
+  dailyCheckIns: DailyCheckIn[];
+  tokenTransactions: TokenTransaction[];
+  rewardMilestones: RewardMilestone[];
+  userMilestoneProgresses: UserMilestoneProgress[];
+  referralCommissionRules: ReferralCommissionRule[];
+  referralCommissions: ReferralCommission[];
+  depositBonusRules: DepositBonusRule[];
+  depositBonuses: DepositBonus[];
+  redemptionRequests: RedemptionRequest[];
   depositOrders: DepositOrder[];
   depositProviderEvents: DepositProviderEvent[];
   rewardRules: RewardRule[];
@@ -445,6 +861,19 @@ export class FileStore extends InMemoryStore {
       users: Array.from(this.users.values()),
       wallets: Array.from(this.wallets.values()),
       walletTransactions: this.walletTransactions,
+      taskPassPlans: Array.from(this.taskPassPlans.values()),
+      userTaskPasses: Array.from(this.userTaskPasses.values()),
+      dailyTasks: Array.from(this.dailyTasks.values()),
+      userDailyTaskAssignments: Array.from(this.userDailyTaskAssignments.values()),
+      dailyCheckIns: this.dailyCheckIns,
+      tokenTransactions: this.tokenTransactions,
+      rewardMilestones: Array.from(this.rewardMilestones.values()),
+      userMilestoneProgresses: Array.from(this.userMilestoneProgresses.values()),
+      referralCommissionRules: Array.from(this.referralCommissionRules.values()),
+      referralCommissions: Array.from(this.referralCommissions.values()),
+      depositBonusRules: Array.from(this.depositBonusRules.values()),
+      depositBonuses: Array.from(this.depositBonuses.values()),
+      redemptionRequests: Array.from(this.redemptionRequests.values()),
       depositOrders: Array.from(this.depositOrders.values()),
       depositProviderEvents: this.depositProviderEvents,
       rewardRules: Array.from(this.rewardRules.values()),
@@ -464,6 +893,19 @@ export class FileStore extends InMemoryStore {
     this.users = new Map(state.users.map((item) => [item.id, item]));
     this.wallets = new Map(state.wallets.map((item) => [item.userId, item]));
     this.walletTransactions = state.walletTransactions;
+    this.taskPassPlans = new Map((state.taskPassPlans ?? []).map((item) => [item.id, item]));
+    this.userTaskPasses = new Map((state.userTaskPasses ?? []).map((item) => [item.id, item]));
+    this.dailyTasks = new Map((state.dailyTasks ?? []).map((item) => [item.id, item]));
+    this.userDailyTaskAssignments = new Map((state.userDailyTaskAssignments ?? []).map((item) => [item.id, item]));
+    this.dailyCheckIns = state.dailyCheckIns ?? [];
+    this.tokenTransactions = state.tokenTransactions ?? [];
+    this.rewardMilestones = new Map((state.rewardMilestones ?? []).map((item) => [item.id, item]));
+    this.userMilestoneProgresses = new Map((state.userMilestoneProgresses ?? []).map((item) => [item.id, item]));
+    this.referralCommissionRules = new Map((state.referralCommissionRules ?? []).map((item) => [item.id, item]));
+    this.referralCommissions = new Map((state.referralCommissions ?? []).map((item) => [item.id, item]));
+    this.depositBonusRules = new Map((state.depositBonusRules ?? []).map((item) => [item.id, item]));
+    this.depositBonuses = new Map((state.depositBonuses ?? []).map((item) => [item.id, item]));
+    this.redemptionRequests = new Map((state.redemptionRequests ?? []).map((item) => [item.id, item]));
     this.depositOrders = new Map(state.depositOrders.map((item) => [item.id, item]));
     this.depositProviderEvents = state.depositProviderEvents;
     this.rewardRules = new Map(state.rewardRules.map((item) => [item.id, item]));
@@ -476,6 +918,7 @@ export class FileStore extends InMemoryStore {
     this.withdrawRequests = new Map(state.withdrawRequests.map((item) => [item.id, item]));
     this.adminAuditLogs = state.adminAuditLogs;
     this.games = state.games?.length ? state.games : gameDefinitions;
+    this.ensureTaskPassSeedData();
   }
 
   override async initialize() {
@@ -523,6 +966,19 @@ export class PostgresStore extends InMemoryStore {
         usersResult,
         walletsResult,
         walletTransactionsResult,
+        taskPassPlansResult,
+        userTaskPassesResult,
+        dailyTasksResult,
+        userDailyTaskAssignmentsResult,
+        dailyCheckInsResult,
+        tokenTransactionsResult,
+        rewardMilestonesResult,
+        userMilestoneProgressesResult,
+        referralCommissionRulesResult,
+        referralCommissionsResult,
+        depositBonusRulesResult,
+        depositBonusesResult,
+        redemptionRequestsResult,
         depositsResult,
         depositEventsResult,
         rewardRulesResult,
@@ -541,7 +997,46 @@ export class PostgresStore extends InMemoryStore {
         ),
         client.query("select id, user_id, type, amount, metadata, created_at from wallet_transactions order by created_at desc"),
         client.query(
-          "select id, user_id, amount, provider, status, checkout_url, provider_order_id, checkout_session, created_at, updated_at from deposit_orders order by created_at desc",
+          "select id, name, duration_days, daily_task_min, daily_task_max, daily_token_cap, target_tokens, price_amount, currency, active, created_at, updated_at from task_pass_plans order by created_at asc",
+        ),
+        client.query(
+          "select id, user_id, plan_id, status, starts_at, ends_at, activated_by_admin_id, payment_reference, created_at, updated_at from user_task_passes order by created_at desc",
+        ),
+        client.query(
+          "select id, title, description, type, reward_tokens, requires_approval, active, created_at, updated_at from daily_tasks order by created_at asc",
+        ),
+        client.query(
+          "select id, user_id, task_pass_id, task_id, date, status, reward_tokens, proof, created_at, started_at, submitted_at, approved_at, claimed_at, rejected_reason from user_daily_task_assignments order by created_at desc",
+        ),
+        client.query(
+          "select id, user_id, task_pass_id, date, reward_tokens, claimed_at from daily_check_ins order by claimed_at desc",
+        ),
+        client.query(
+          "select id, user_id, amount, direction, reason, reference_id, balance_after, created_at from token_transactions order by created_at desc",
+        ),
+        client.query(
+          "select id, plan_id, name, required_day, required_completed_tasks, reward_tokens, active, created_at, updated_at from reward_milestones order by required_day asc, created_at asc",
+        ),
+        client.query(
+          "select id, user_id, task_pass_id, milestone_id, status, completed_at, claimed_at from user_milestone_progresses order by milestone_id asc",
+        ),
+        client.query(
+          "select id, trigger, reward_type, reward_value, max_reward_tokens, required_task_id, required_milestone_id, active, created_at, updated_at from referral_commission_rules order by created_at asc",
+        ),
+        client.query(
+          "select id, referrer_user_id, referred_user_id, rule_id, trigger_type, trigger_reference_id, reward_tokens, status, credited_at, created_at from referral_commissions order by created_at desc",
+        ),
+        client.query(
+          "select id, min_deposit_amount, bonus_percent, max_bonus_tokens, unlock_required_approved_tasks, active, created_at, updated_at from deposit_bonus_rules order by min_deposit_amount asc",
+        ),
+        client.query(
+          "select id, user_id, deposit_id, rule_id, deposit_amount, bonus_tokens, unlock_required_approved_tasks, status, unlocked_at, credited_at, created_at from deposit_bonuses order by created_at desc",
+        ),
+        client.query(
+          "select id, user_id, tokens, value_amount, status, payout_method, note, created_at, reviewed_at, paid_at from redemption_requests order by created_at desc",
+        ),
+        client.query(
+          "select id, user_id, amount, provider, status, checkout_url, provider_order_id, checkout_session, task_pass_plan_id, created_at, updated_at from deposit_orders order by created_at desc",
         ),
         client.query(
           "select id, deposit_order_id, provider, event_type, payload, created_at from deposit_provider_events order by created_at desc",
@@ -617,6 +1112,224 @@ export class PostgresStore extends InMemoryStore {
         createdAt: new Date(row.created_at as string).toISOString(),
       }));
 
+      this.taskPassPlans = new Map(
+        taskPassPlansResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            name: row.name as string,
+            durationDays: Number(row.duration_days),
+            dailyTaskMin: Number(row.daily_task_min),
+            dailyTaskMax: Number(row.daily_task_max),
+            dailyTokenCap: numberValue(row.daily_token_cap),
+            targetTokens: numberValue(row.target_tokens),
+            priceAmount: numberValue(row.price_amount),
+            currency: row.currency as string,
+            active: row.active as boolean,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.userTaskPasses = new Map(
+        userTaskPassesResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            userId: row.user_id as string,
+            planId: row.plan_id as string,
+            status: row.status as UserTaskPass["status"],
+            startsAt: (row.starts_at as string | null) ? new Date(row.starts_at as string).toISOString() : undefined,
+            endsAt: (row.ends_at as string | null) ? new Date(row.ends_at as string).toISOString() : undefined,
+            activatedByAdminId: (row.activated_by_admin_id as string | null) ?? undefined,
+            paymentReference: (row.payment_reference as string | null) ?? undefined,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.dailyTasks = new Map(
+        dailyTasksResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            title: row.title as string,
+            description: row.description as string,
+            type: row.type as DailyTask["type"],
+            rewardTokens: numberValue(row.reward_tokens),
+            requiresApproval: row.requires_approval as boolean,
+            active: row.active as boolean,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.userDailyTaskAssignments = new Map(
+        userDailyTaskAssignmentsResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            userId: row.user_id as string,
+            taskPassId: row.task_pass_id as string,
+            taskId: row.task_id as string,
+            date: row.date as string,
+            status: row.status as UserDailyTaskAssignment["status"],
+            rewardTokens: numberValue(row.reward_tokens),
+            proof: (row.proof as string | null) ?? undefined,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            startedAt: (row.started_at as string | null) ? new Date(row.started_at as string).toISOString() : undefined,
+            submittedAt: (row.submitted_at as string | null) ? new Date(row.submitted_at as string).toISOString() : undefined,
+            approvedAt: (row.approved_at as string | null) ? new Date(row.approved_at as string).toISOString() : undefined,
+            claimedAt: (row.claimed_at as string | null) ? new Date(row.claimed_at as string).toISOString() : undefined,
+            rejectedReason: (row.rejected_reason as string | null) ?? undefined,
+          },
+        ]),
+      );
+
+      this.dailyCheckIns = dailyCheckInsResult.rows.map((row: DbRow) => ({
+        id: row.id as string,
+        userId: row.user_id as string,
+        taskPassId: row.task_pass_id as string,
+        date: row.date as string,
+        rewardTokens: numberValue(row.reward_tokens),
+        claimedAt: new Date(row.claimed_at as string).toISOString(),
+      }));
+
+      this.tokenTransactions = tokenTransactionsResult.rows.map((row: DbRow) => ({
+        id: row.id as string,
+        userId: row.user_id as string,
+        amount: numberValue(row.amount),
+        direction: row.direction as TokenTransaction["direction"],
+        reason: row.reason as TokenTransaction["reason"],
+        referenceId: row.reference_id as string,
+        balanceAfter: numberValue(row.balance_after),
+        createdAt: new Date(row.created_at as string).toISOString(),
+      }));
+
+      this.rewardMilestones = new Map(
+        rewardMilestonesResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            planId: row.plan_id as string,
+            name: row.name as string,
+            requiredDay: Number(row.required_day),
+            requiredCompletedTasks: Number(row.required_completed_tasks),
+            rewardTokens: numberValue(row.reward_tokens),
+            active: row.active as boolean,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.userMilestoneProgresses = new Map(
+        userMilestoneProgressesResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            userId: row.user_id as string,
+            taskPassId: row.task_pass_id as string,
+            milestoneId: row.milestone_id as string,
+            status: row.status as UserMilestoneProgress["status"],
+            completedAt: (row.completed_at as string | null) ? new Date(row.completed_at as string).toISOString() : undefined,
+            claimedAt: (row.claimed_at as string | null) ? new Date(row.claimed_at as string).toISOString() : undefined,
+          },
+        ]),
+      );
+
+      this.referralCommissionRules = new Map(
+        referralCommissionRulesResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            trigger: row.trigger as ReferralCommissionRule["trigger"],
+            rewardType: row.reward_type as ReferralCommissionRule["rewardType"],
+            rewardValue: numberValue(row.reward_value),
+            maxRewardTokens: row.max_reward_tokens == null ? undefined : numberValue(row.max_reward_tokens),
+            requiredTaskId: (row.required_task_id as string | null) ?? undefined,
+            requiredMilestoneId: (row.required_milestone_id as string | null) ?? undefined,
+            active: row.active as boolean,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.referralCommissions = new Map(
+        referralCommissionsResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            referrerUserId: row.referrer_user_id as string,
+            referredUserId: row.referred_user_id as string,
+            ruleId: row.rule_id as string,
+            triggerType: row.trigger_type as ReferralCommission["triggerType"],
+            triggerReferenceId: row.trigger_reference_id as string,
+            rewardTokens: numberValue(row.reward_tokens),
+            status: row.status as ReferralCommission["status"],
+            creditedAt: (row.credited_at as string | null) ? new Date(row.credited_at as string).toISOString() : undefined,
+            createdAt: new Date(row.created_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.depositBonusRules = new Map(
+        depositBonusRulesResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            minDepositAmount: numberValue(row.min_deposit_amount),
+            bonusPercent: numberValue(row.bonus_percent),
+            maxBonusTokens: numberValue(row.max_bonus_tokens),
+            unlockRequiredApprovedTasks: Number(row.unlock_required_approved_tasks),
+            active: row.active as boolean,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.depositBonuses = new Map(
+        depositBonusesResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            userId: row.user_id as string,
+            depositId: row.deposit_id as string,
+            ruleId: row.rule_id as string,
+            depositAmount: numberValue(row.deposit_amount),
+            bonusTokens: numberValue(row.bonus_tokens),
+            unlockRequiredApprovedTasks: Number(row.unlock_required_approved_tasks),
+            status: row.status as DepositBonus["status"],
+            unlockedAt: (row.unlocked_at as string | null) ? new Date(row.unlocked_at as string).toISOString() : undefined,
+            creditedAt: (row.credited_at as string | null) ? new Date(row.credited_at as string).toISOString() : undefined,
+            createdAt: new Date(row.created_at as string).toISOString(),
+          },
+        ]),
+      );
+
+      this.redemptionRequests = new Map(
+        redemptionRequestsResult.rows.map((row: DbRow) => [
+          row.id as string,
+          {
+            id: row.id as string,
+            userId: row.user_id as string,
+            tokens: numberValue(row.tokens),
+            valueAmount: numberValue(row.value_amount),
+            status: row.status as RedemptionRequest["status"],
+            payoutMethod: row.payout_method as RedemptionRequest["payoutMethod"],
+            note: (row.note as string | null) ?? undefined,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            reviewedAt: (row.reviewed_at as string | null) ? new Date(row.reviewed_at as string).toISOString() : undefined,
+            paidAt: (row.paid_at as string | null) ? new Date(row.paid_at as string).toISOString() : undefined,
+          },
+        ]),
+      );
+
       this.depositOrders = new Map(
         depositsResult.rows.map((row: DbRow) => [
           row.id as string,
@@ -629,6 +1342,7 @@ export class PostgresStore extends InMemoryStore {
             checkoutUrl: row.checkout_url as string,
             providerOrderId: (row.provider_order_id as string | null) ?? undefined,
             checkoutSession: (row.checkout_session as DepositOrder["checkoutSession"] | null) ?? undefined,
+            taskPassPlanId: (row.task_pass_plan_id as string | null) ?? undefined,
             createdAt: new Date(row.created_at as string).toISOString(),
             updatedAt: new Date(row.updated_at as string).toISOString(),
           },
@@ -770,6 +1484,7 @@ export class PostgresStore extends InMemoryStore {
         payload: (row.payload as Record<string, unknown>) ?? {},
         createdAt: new Date(row.created_at as string).toISOString(),
       }));
+      this.ensureTaskPassSeedData();
     } finally {
       client.release();
     }
@@ -782,6 +1497,19 @@ export class PostgresStore extends InMemoryStore {
 
       await client.query("delete from admin_audit_logs");
       await client.query("delete from trade_matches");
+      await client.query("delete from redemption_requests");
+      await client.query("delete from deposit_bonuses");
+      await client.query("delete from deposit_bonus_rules");
+      await client.query("delete from referral_commissions");
+      await client.query("delete from referral_commission_rules");
+      await client.query("delete from user_milestone_progresses");
+      await client.query("delete from reward_milestones");
+      await client.query("delete from token_transactions");
+      await client.query("delete from daily_check_ins");
+      await client.query("delete from user_daily_task_assignments");
+      await client.query("delete from daily_tasks");
+      await client.query("delete from user_task_passes");
+      await client.query("delete from task_pass_plans");
       await client.query("delete from withdraw_requests");
       await client.query("delete from withdraw_beneficiaries");
       await client.query("delete from sell_order_chunks");
@@ -850,6 +1578,269 @@ export class PostgresStore extends InMemoryStore {
         );
       }
 
+      for (const plan of this.taskPassPlans.values()) {
+        await client.query(
+          `
+            insert into task_pass_plans
+              (id, name, duration_days, daily_task_min, daily_task_max, daily_token_cap, target_tokens, price_amount, currency, active, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          `,
+          [
+            plan.id,
+            plan.name,
+            plan.durationDays,
+            plan.dailyTaskMin,
+            plan.dailyTaskMax,
+            plan.dailyTokenCap,
+            plan.targetTokens,
+            plan.priceAmount,
+            plan.currency,
+            plan.active,
+            plan.createdAt,
+            plan.updatedAt,
+          ],
+        );
+      }
+
+      for (const userTaskPass of this.userTaskPasses.values()) {
+        await client.query(
+          `
+            insert into user_task_passes
+              (id, user_id, plan_id, status, starts_at, ends_at, activated_by_admin_id, payment_reference, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `,
+          [
+            userTaskPass.id,
+            userTaskPass.userId,
+            userTaskPass.planId,
+            userTaskPass.status,
+            userTaskPass.startsAt ?? null,
+            userTaskPass.endsAt ?? null,
+            userTaskPass.activatedByAdminId ?? null,
+            userTaskPass.paymentReference ?? null,
+            userTaskPass.createdAt,
+            userTaskPass.updatedAt,
+          ],
+        );
+      }
+
+      for (const task of this.dailyTasks.values()) {
+        await client.query(
+          `
+            insert into daily_tasks
+              (id, title, description, type, reward_tokens, requires_approval, active, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `,
+          [task.id, task.title, task.description, task.type, task.rewardTokens, task.requiresApproval, task.active, task.createdAt, task.updatedAt],
+        );
+      }
+
+      for (const assignment of this.userDailyTaskAssignments.values()) {
+        await client.query(
+          `
+            insert into user_daily_task_assignments
+              (id, user_id, task_pass_id, task_id, date, status, reward_tokens, proof, created_at, started_at, submitted_at, approved_at, claimed_at, rejected_reason)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          `,
+          [
+            assignment.id,
+            assignment.userId,
+            assignment.taskPassId,
+            assignment.taskId,
+            assignment.date,
+            assignment.status,
+            assignment.rewardTokens,
+            assignment.proof ?? null,
+            assignment.createdAt,
+            assignment.startedAt ?? null,
+            assignment.submittedAt ?? null,
+            assignment.approvedAt ?? null,
+            assignment.claimedAt ?? null,
+            assignment.rejectedReason ?? null,
+          ],
+        );
+      }
+
+      for (const checkIn of this.dailyCheckIns) {
+        await client.query(
+          `
+            insert into daily_check_ins
+              (id, user_id, task_pass_id, date, reward_tokens, claimed_at)
+            values ($1, $2, $3, $4, $5, $6)
+          `,
+          [checkIn.id, checkIn.userId, checkIn.taskPassId, checkIn.date, checkIn.rewardTokens, checkIn.claimedAt],
+        );
+      }
+
+      for (const transaction of this.tokenTransactions) {
+        await client.query(
+          `
+            insert into token_transactions
+              (id, user_id, amount, direction, reason, reference_id, balance_after, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+          `,
+          [
+            transaction.id,
+            transaction.userId,
+            transaction.amount,
+            transaction.direction,
+            transaction.reason,
+            transaction.referenceId,
+            transaction.balanceAfter,
+            transaction.createdAt,
+          ],
+        );
+      }
+
+      for (const milestone of this.rewardMilestones.values()) {
+        await client.query(
+          `
+            insert into reward_milestones
+              (id, plan_id, name, required_day, required_completed_tasks, reward_tokens, active, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `,
+          [
+            milestone.id,
+            milestone.planId,
+            milestone.name,
+            milestone.requiredDay,
+            milestone.requiredCompletedTasks,
+            milestone.rewardTokens,
+            milestone.active,
+            milestone.createdAt,
+            milestone.updatedAt,
+          ],
+        );
+      }
+
+      for (const progress of this.userMilestoneProgresses.values()) {
+        await client.query(
+          `
+            insert into user_milestone_progresses
+              (id, user_id, task_pass_id, milestone_id, status, completed_at, claimed_at)
+            values ($1, $2, $3, $4, $5, $6, $7)
+          `,
+          [
+            progress.id,
+            progress.userId,
+            progress.taskPassId,
+            progress.milestoneId,
+            progress.status,
+            progress.completedAt ?? null,
+            progress.claimedAt ?? null,
+          ],
+        );
+      }
+
+      for (const rule of this.referralCommissionRules.values()) {
+        await client.query(
+          `
+            insert into referral_commission_rules
+              (id, trigger, reward_type, reward_value, max_reward_tokens, required_task_id, required_milestone_id, active, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `,
+          [
+            rule.id,
+            rule.trigger,
+            rule.rewardType,
+            rule.rewardValue,
+            rule.maxRewardTokens ?? null,
+            rule.requiredTaskId ?? null,
+            rule.requiredMilestoneId ?? null,
+            rule.active,
+            rule.createdAt,
+            rule.updatedAt,
+          ],
+        );
+      }
+
+      for (const commission of this.referralCommissions.values()) {
+        await client.query(
+          `
+            insert into referral_commissions
+              (id, referrer_user_id, referred_user_id, rule_id, trigger_type, trigger_reference_id, reward_tokens, status, credited_at, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `,
+          [
+            commission.id,
+            commission.referrerUserId,
+            commission.referredUserId,
+            commission.ruleId,
+            commission.triggerType,
+            commission.triggerReferenceId,
+            commission.rewardTokens,
+            commission.status,
+            commission.creditedAt ?? null,
+            commission.createdAt,
+          ],
+        );
+      }
+
+      for (const rule of this.depositBonusRules.values()) {
+        await client.query(
+          `
+            insert into deposit_bonus_rules
+              (id, min_deposit_amount, bonus_percent, max_bonus_tokens, unlock_required_approved_tasks, active, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+          `,
+          [
+            rule.id,
+            rule.minDepositAmount,
+            rule.bonusPercent,
+            rule.maxBonusTokens,
+            rule.unlockRequiredApprovedTasks,
+            rule.active,
+            rule.createdAt,
+            rule.updatedAt,
+          ],
+        );
+      }
+
+      for (const bonus of this.depositBonuses.values()) {
+        await client.query(
+          `
+            insert into deposit_bonuses
+              (id, user_id, deposit_id, rule_id, deposit_amount, bonus_tokens, unlock_required_approved_tasks, status, unlocked_at, credited_at, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `,
+          [
+            bonus.id,
+            bonus.userId,
+            bonus.depositId,
+            bonus.ruleId,
+            bonus.depositAmount,
+            bonus.bonusTokens,
+            bonus.unlockRequiredApprovedTasks,
+            bonus.status,
+            bonus.unlockedAt ?? null,
+            bonus.creditedAt ?? null,
+            bonus.createdAt,
+          ],
+        );
+      }
+
+      for (const request of this.redemptionRequests.values()) {
+        await client.query(
+          `
+            insert into redemption_requests
+              (id, user_id, tokens, value_amount, status, payout_method, note, created_at, reviewed_at, paid_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `,
+          [
+            request.id,
+            request.userId,
+            request.tokens,
+            request.valueAmount,
+            request.status,
+            request.payoutMethod,
+            request.note ?? null,
+            request.createdAt,
+            request.reviewedAt ?? null,
+            request.paidAt ?? null,
+          ],
+        );
+      }
+
       for (const rule of this.rewardRules.values()) {
         await client.query(
           `
@@ -874,8 +1865,8 @@ export class PostgresStore extends InMemoryStore {
         await client.query(
           `
             insert into deposit_orders
-              (id, user_id, amount, provider, status, checkout_url, provider_order_id, checkout_session, created_at, updated_at)
-            values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+              (id, user_id, amount, provider, status, checkout_url, provider_order_id, checkout_session, task_pass_plan_id, created_at, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
           `,
           [
             deposit.id,
@@ -886,6 +1877,7 @@ export class PostgresStore extends InMemoryStore {
             deposit.checkoutUrl,
             deposit.providerOrderId ?? null,
             deposit.checkoutSession ? JSON.stringify(deposit.checkoutSession) : null,
+            deposit.taskPassPlanId ?? null,
             deposit.createdAt,
             deposit.updatedAt,
           ],

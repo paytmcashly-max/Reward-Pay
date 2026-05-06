@@ -47,6 +47,8 @@ if (-not $env:NODE_ENV) {
   $env:NODE_ENV = "production"
 }
 
+$env:EXPO_USE_COMMUNITY_AUTOLINKING = "1"
+
 Push-Location $androidDir
 try {
   & .\gradlew.bat assembleRelease

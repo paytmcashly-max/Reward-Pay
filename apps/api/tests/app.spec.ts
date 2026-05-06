@@ -68,7 +68,7 @@ describe("api flow", () => {
       .send({});
 
     expect(sync.status).toBe(200);
-    expect(sync.body.status).toBe("listed");
+    expect(sync.body.status).toBe("reward_credited");
 
     const syncAgain = await request(app)
       .post(`/deposits/${deposit.body.id}/sync`)
@@ -76,7 +76,7 @@ describe("api flow", () => {
       .send({});
 
     expect(syncAgain.status).toBe(200);
-    expect(syncAgain.body.status).toBe("listed");
+    expect(syncAgain.body.status).toBe("reward_credited");
 
     const transactions = await request(app).get("/wallet/transactions").set("authorization", `Bearer ${token}`);
     expect(transactions.status).toBe(200);
@@ -180,5 +180,74 @@ describe("api flow", () => {
     expect(withdrawal.body.code).toBe("user_blocked");
     expect(eligibility.status).toBe(200);
     expect(eligibility.body.reasons[0].code).toBe("blocked_user");
+  });
+
+  it("supports phase 1 task pass and token flow", async () => {
+    const app = createTestApp({
+      TASK_PASS_ENABLED: "true",
+    });
+
+    await request(app).post("/auth/send-otp").send({ phone: "9000000077" });
+    const verify = await request(app)
+      .post("/auth/verify-otp")
+      .send({ phone: "9000000077", code: "123456", name: "Task Pass User" });
+
+    const token = verify.body.accessToken as string;
+    const plans = await request(app).get("/task-pass/plans");
+    expect(plans.status).toBe(200);
+    expect(plans.body.some((plan: { id: string }) => plan.id === "pass_starter")).toBe(true);
+
+    const requestPass = await request(app)
+      .post("/task-pass/activate-request")
+      .set("authorization", `Bearer ${token}`)
+      .send({ planId: "pass_starter" });
+    expect(requestPass.status).toBe(201);
+
+    const adminLogin = await request(app).post("/admin/auth/login").send({ phone: "9999999999", password: "admin1234" });
+    const adminToken = adminLogin.body.accessToken as string;
+
+    const activatePass = await request(app)
+      .post(`/admin/task-passes/${requestPass.body.id}/activate`)
+      .set("authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(activatePass.status).toBe(200);
+
+    const assignTasks = await request(app)
+      .post(`/admin/users/${verify.body.user.id}/assign-daily-tasks`)
+      .set("authorization", `Bearer ${adminToken}`)
+      .send({});
+    expect(assignTasks.status).toBe(200);
+    expect(assignTasks.body).toHaveLength(2);
+
+    const dailyOverview = await request(app).get("/daily").set("authorization", `Bearer ${token}`);
+    expect(dailyOverview.status).toBe(200);
+    expect(dailyOverview.body.activePlan.name).toBe("Starter Pass");
+
+    const checkIn = await request(app).post("/daily/check-in").set("authorization", `Bearer ${token}`).send({});
+    expect(checkIn.status).toBe(201);
+
+    const dailyTasks = await request(app).get("/daily/tasks").set("authorization", `Bearer ${token}`);
+    expect(dailyTasks.status).toBe(200);
+    const autoTask = dailyTasks.body.find((item: { task: { requiresApproval: boolean } }) => !item.task.requiresApproval);
+    expect(autoTask).toBeTruthy();
+
+    await request(app)
+      .post(`/daily/tasks/${autoTask.assignment.id}/submit`)
+      .set("authorization", `Bearer ${token}`)
+      .send({});
+    const claim = await request(app)
+      .post(`/daily/tasks/${autoTask.assignment.id}/claim`)
+      .set("authorization", `Bearer ${token}`)
+      .send({});
+    expect(claim.status).toBe(200);
+
+    const tokenBalance = await request(app).get("/tokens/balance").set("authorization", `Bearer ${token}`);
+    expect(tokenBalance.status).toBe(200);
+    expect(tokenBalance.body.balance).toBeGreaterThan(0);
+
+    const tokenLedger = await request(app).get("/tokens/ledger").set("authorization", `Bearer ${token}`);
+    expect(tokenLedger.status).toBe(200);
+    expect(tokenLedger.body.filter((entry: { reason: string }) => entry.reason === "daily_checkin")).toHaveLength(1);
+    expect(tokenLedger.body.filter((entry: { reason: string }) => entry.reason === "daily_task")).toHaveLength(1);
   });
 });
