@@ -1509,7 +1509,6 @@ export class PostgresStore extends InMemoryStore {
       await client.query("delete from user_daily_task_assignments");
       await client.query("delete from daily_tasks");
       await client.query("delete from user_task_passes");
-      await client.query("delete from task_pass_plans");
       await client.query("delete from withdraw_requests");
       await client.query("delete from withdraw_beneficiaries");
       await client.query("delete from sell_order_chunks");
@@ -1519,6 +1518,7 @@ export class PostgresStore extends InMemoryStore {
       await client.query("delete from reward_credits");
       await client.query("delete from deposit_provider_events");
       await client.query("delete from deposit_orders");
+      await client.query("delete from task_pass_plans");
       await client.query("delete from wallet_transactions");
       await client.query("delete from wallet_accounts");
       await client.query("delete from otp_sessions");
