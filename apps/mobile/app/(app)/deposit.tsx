@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import type { DepositOrder } from "@reward-wallet/shared";
@@ -13,7 +13,7 @@ import { fontFamily, typography } from "@/theme/typography";
 import { Alert, View } from "@/ui/native";
 import { Banner, Button, Card, Chip, HelperText, Surface, Text, TextInput } from "@/ui/paper";
 import { canRepayDeposit, getDepositStatusHint, getDepositStatusLabel, getDepositStatusTone, isSuccessfulDeposit } from "@/utils/deposit-status";
-import { formatMoney, formatTimeLabel, getRewardPreview } from "@/utils/money";
+import { formatMoney, formatTimeLabel } from "@/utils/money";
 
 const amountPresets = [500, 1000, 2000, 5000];
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,7 +34,7 @@ type PaymentSheetState = {
 
 export default function DepositScreen() {
   const router = useRouter();
-  const { wallet, rewardRules, deposits, createDeposit, syncDeposit, cancelDeposit, isSubmitting, errorMessage, providerStatus } = useMobileStore();
+  const { wallet, deposits, createDeposit, syncDeposit, cancelDeposit, isSubmitting, errorMessage, providerStatus } = useMobileStore();
   const [amount, setAmount] = useState("1000");
   const [resultSheet, setResultSheet] = useState<PaymentSheetState>({
     visible: false,
@@ -45,7 +45,6 @@ export default function DepositScreen() {
     actions: [],
   });
   const numericAmount = Number(amount || 0);
-  const preview = useMemo(() => getRewardPreview(numericAmount, rewardRules), [numericAmount, rewardRules]);
   const paymentReady = numericAmount >= 100;
   const realPaymentsReady = providerStatus?.cashfree.paymentsLive ?? false;
   const nativeCheckoutReady = isCashfreeNativeAvailable();
@@ -63,8 +62,10 @@ export default function DepositScreen() {
     return latest;
   };
 
-  const openReceipt = (depositId: string) =>
+  const openReceipt = (depositId: string) => {
+    setResultSheet((state) => ({ ...state, visible: false }));
     router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: depositId } });
+  };
 
   const showDepositOutcome = (deposit: DepositOrder) => {
     if (isSuccessfulDeposit(deposit.status)) {
@@ -252,8 +253,8 @@ export default function DepositScreen() {
               <Text selectable style={{ ...typography.metricValue, color: colors.ink }}>{formatMoney(wallet.withdrawableBalance)}</Text>
             </Surface>
             <Surface elevation={0} style={{ flex: 1, borderRadius: 17, backgroundColor: "#f7f8fb", paddingHorizontal: 10, paddingVertical: 9, gap: 2 }}>
-              <Text selectable style={{ ...typography.metricLabel, color: colors.muted }}>EST. EXTRA</Text>
-              <Text selectable style={{ ...typography.metricValue, color: colors.green }}>{formatMoney(preview.reward)}</Text>
+              <Text selectable style={{ ...typography.metricLabel, color: colors.muted }}>MINIMUM TOP-UP</Text>
+              <Text selectable style={{ ...typography.metricValue, color: colors.ink }}>{formatMoney(100)}</Text>
             </Surface>
           </View>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>

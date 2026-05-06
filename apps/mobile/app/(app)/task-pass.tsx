@@ -104,8 +104,10 @@ export default function TaskPassScreen() {
   const nativeCheckoutReady = isCashfreeNativeAvailable();
   const providerEnvironment = providerStatus?.cashfree.baseUrl?.includes("sandbox") ? "sandbox" : "production";
 
-  const openReceipt = (depositId: string) =>
+  const openReceipt = (depositId: string) => {
+    setResultSheet((state) => ({ ...state, visible: false }));
     router.push({ pathname: "/transaction-details", params: { source: "deposit", sourceId: depositId } });
+  };
 
   const showPaymentOutcome = (deposit: DepositOrder, extraDetails: string[] = []) => {
     const baseDetails = [

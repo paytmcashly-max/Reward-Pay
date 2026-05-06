@@ -90,6 +90,13 @@ const prettify = (value: string) =>
     .replaceAll("_", " ")
     .replace(/\b\w/g, (match) => match.toUpperCase());
 
+const getDepositTitle = (deposit: DepositOrder) => (deposit.taskPassPlanId ? "Task Pass payment" : "Add Money");
+
+const getDepositSubtitle = (deposit: DepositOrder) =>
+  deposit.taskPassPlanId
+    ? `${deposit.provider === "cashfree" ? "Cashfree" : "Test"} pass purchase`
+    : `${deposit.provider === "cashfree" ? "Cashfree" : "Test top-up"} deposit`;
+
 export function buildActivityFeed(input: {
   deposits: DepositOrder[];
   withdrawals: WithdrawRequest[];
@@ -99,8 +106,8 @@ export function buildActivityFeed(input: {
     id: `deposit:${deposit.id}`,
     source: "deposit",
     sourceId: deposit.id,
-    title: "Add Money",
-    subtitle: `${deposit.provider === "cashfree" ? "Cashfree" : "Test top-up"} deposit`,
+    title: getDepositTitle(deposit),
+    subtitle: getDepositSubtitle(deposit),
     amount: deposit.amount,
     createdAt: deposit.updatedAt || deposit.createdAt,
     badge: depositBadge[deposit.status],
@@ -109,6 +116,7 @@ export function buildActivityFeed(input: {
     details: [
       `Transaction ID: ${deposit.providerOrderId ?? deposit.id}`,
       `Status: ${depositBadge[deposit.status]}`,
+      deposit.taskPassPlanId ? `Purpose: Task Pass purchase` : `Purpose: Add money`,
       `Amount: Rs ${deposit.amount.toLocaleString("en-IN")}`,
       `Created: ${new Date(deposit.createdAt).toLocaleString("en-IN")}`,
       `Updated: ${new Date(deposit.updatedAt).toLocaleString("en-IN")}`,

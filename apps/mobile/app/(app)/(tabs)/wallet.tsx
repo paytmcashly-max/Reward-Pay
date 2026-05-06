@@ -40,6 +40,7 @@ export default function WalletScreen() {
   const totalBalance = wallet.withdrawableBalance;
   const tokenToday = tokenBalance?.todayEarned ?? 0;
   const tokenCap = tokenBalance?.todayCap ?? currentTaskPass?.plan?.dailyTokenCap ?? 0;
+  const hasDailyRewardCap = tokenCap > 0;
   const activityItems = useMemo(
     () => buildBalanceActivity({ deposits, withdrawals, transactions, tokenLedger }),
     [deposits, tokenLedger, transactions, withdrawals],
@@ -70,7 +71,11 @@ export default function WalletScreen() {
             </View>
           </View>
 
-          <MiniMetric label="Today added" value={`${tokenToday}/${tokenCap}`} helper="Rewards added from tasks and check-ins" icon="star-circle-outline" tone={colors.green} />
+          {hasDailyRewardCap ? (
+            <MiniMetric label="Today added" value={`${tokenToday}/${tokenCap}`} helper="Rewards added from tasks and check-ins" icon="star-circle-outline" tone={colors.green} />
+          ) : (
+            <MiniMetric label="Task Pass" value="Not active" helper="Buy a pass to start daily rewards" icon="shield-star-outline" tone={colors.goldDeep} />
+          )}
 
           <View style={{ flexDirection: "row", gap: 7 }}>
             <Link href="/deposit" asChild>

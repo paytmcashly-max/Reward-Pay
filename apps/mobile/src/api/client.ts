@@ -32,6 +32,24 @@ type RequestOptions = {
   method?: "GET" | "POST";
   body?: unknown;
   token?: string | null;
+  timeoutMs?: number;
+};
+
+const DEFAULT_TIMEOUT_MS = 15000;
+
+const isAbortError = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "name" in error &&
+  String((error as { name?: unknown }).name) === "AbortError";
+
+const isNetworkError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes("network request failed") || message.includes("failed to fetch") || message.includes("networkerror");
 };
 
 const request = async <T>(path: string, options: RequestOptions = {}): Promise<T> => {
@@ -39,14 +57,30 @@ const request = async <T>(path: string, options: RequestOptions = {}): Promise<T
     throw new Error("API base URL is not configured");
   }
 
-  const response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${runtimeConfig.apiBaseUrl}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error("Request timed out. Check your internet connection and try again.");
+    }
+    if (isNetworkError(error)) {
+      throw new Error("Unable to reach RewardPay server. Check your internet connection and try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const raw = await response.text();
   let data: unknown = null;
