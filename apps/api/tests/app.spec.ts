@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createPlatformApp } from "../src/app.js";
@@ -91,6 +92,27 @@ describe("api flow", () => {
     const response = await request(app).post("/webhooks/cashfree").send({ order_id: "dep_missing" });
     expect(response.status).toBe(401);
     expect(response.body.code).toBe("missing_webhook_signature");
+  });
+
+  it("accepts Cashfree dashboard webhook test payloads with timestamped signatures", async () => {
+    const secret = "test_webhook_secret";
+    const app = createTestApp({
+      CASHFREE_WEBHOOK_SECRET: secret,
+    });
+    const payload = { type: "WEBHOOK", data: { test_object: { test_key: "test_value" } } };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1746427759733";
+    const signature = crypto.createHmac("sha256", secret).update(`${timestamp}${rawBody}`).digest("base64");
+
+    const response = await request(app)
+      .post("/webhooks/cashfree")
+      .set("content-type", "application/json")
+      .set("x-webhook-timestamp", timestamp)
+      .set("x-webhook-signature", signature)
+      .send(rawBody);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, test: true });
   });
 
   it("rate limits repeated deposit sync requests", async () => {

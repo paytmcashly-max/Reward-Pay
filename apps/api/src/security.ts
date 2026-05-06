@@ -66,8 +66,9 @@ export const verifyToken = (token: string, secret: string): TokenPayload => {
   return payload;
 };
 
-export const verifyWebhookSignature = (input: { rawBody: string; signature: string; secret: string }) => {
-  const expected = crypto.createHmac("sha256", input.secret).update(input.rawBody).digest("base64");
+export const verifyWebhookSignature = (input: { rawBody: string; signature: string; secret: string; timestamp?: string }) => {
+  const signedPayload = input.timestamp ? `${input.timestamp}${input.rawBody}` : input.rawBody;
+  const expected = crypto.createHmac("sha256", input.secret).update(signedPayload).digest("base64");
   const signature = input.signature.trim();
   if (signature.length !== expected.length) {
     return false;

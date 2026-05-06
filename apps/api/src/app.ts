@@ -660,10 +660,12 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
         if (!signature) {
           throw new AppError("missing_webhook_signature", "Missing Cashfree webhook signature", 401);
         }
+        const timestamp = req.header("x-webhook-timestamp") ?? undefined;
         const rawBody = (req as RequestWithRawBody)[rawBodySymbol] ?? JSON.stringify(req.body ?? {});
         const valid = verifyWebhookSignature({
           rawBody,
           signature,
+          timestamp,
           secret: config.CASHFREE_WEBHOOK_SECRET,
         });
         if (!valid) {
@@ -671,8 +673,20 @@ export const createPlatformApp = (engine: PlatformEngine, config: AppConfig) => 
         }
       }
 
+      const webhookBody = req.body as Record<string, unknown>;
+      const isDashboardTest =
+        webhookBody.type === "WEBHOOK" &&
+        typeof webhookBody.data === "object" &&
+        webhookBody.data !== null &&
+        "test_object" in webhookBody.data;
+
+      if (isDashboardTest) {
+        res.json({ ok: true, test: true });
+        return;
+      }
+
       const deposit = await engine.handlePaymentWebhook("cashfree", {
-        ...(req.body as Record<string, unknown>),
+        ...webhookBody,
         _meta: {
           signaturePresent: Boolean(req.header("x-webhook-signature")),
           forwardedFor: req.header("x-forwarded-for") ?? null,
