@@ -1089,6 +1089,8 @@ export class PlatformEngine {
   async confirmDeposit(depositId: string): Promise<DepositOrder> {
     const deposit = this.mustDeposit(depositId);
     if (deposit.status === "paid" || deposit.status === "verified" || deposit.status === "reward_credited") {
+      await this.ensureTaskPassDepositSideEffects(deposit);
+      await this.store.flush();
       return deposit;
     }
 
@@ -1133,25 +1135,7 @@ export class PlatformEngine {
       });
     }
 
-    if (deposit.taskPassPlanId && !stageAlreadyApplied("deposit.lifecycle.task_pass_activated")) {
-      const taskPass = await this.ensureTaskPassFromDeposit(deposit);
-      this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.task_pass_activated", {
-        taskPassId: taskPass.id,
-        planId: deposit.taskPassPlanId,
-      });
-    }
-
-    if (!stageAlreadyApplied("deposit.lifecycle.deposit_bonus_locked")) {
-      const bonus = this.maybeCreateDepositBonus(deposit);
-      if (bonus) {
-        this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.deposit_bonus_locked", {
-          bonusId: bonus.id,
-          bonusTokens: bonus.bonusTokens,
-        });
-      }
-    }
-
-    await this.maybeUnlockDepositBonusesForUser(deposit.userId);
+    await this.ensureTaskPassDepositSideEffects(deposit);
     deposit.status = "reward_credited";
     deposit.updatedAt = now();
     await this.store.flush();
@@ -1165,7 +1149,7 @@ export class PlatformEngine {
     }
 
     if (deposit.status === "paid" || deposit.status === "verified" || deposit.status === "reward_credited") {
-      return deposit;
+      return this.confirmDeposit(deposit.id);
     }
 
     const provider = this.paymentAdapters[(deposit.provider as PaymentProvider) ?? "mock"];
@@ -2075,6 +2059,30 @@ export class PlatformEngine {
 
     const requested = await this.requestTaskPassActivation(deposit.userId, plan.id, deposit.id);
     return this.activateTaskPassRecord(requested);
+  }
+
+  private async ensureTaskPassDepositSideEffects(deposit: DepositOrder) {
+    if (deposit.taskPassPlanId) {
+      const taskPass = await this.ensureTaskPassFromDeposit(deposit);
+      if (!this.store.hasDepositProviderEvent(deposit.id, "deposit.lifecycle.task_pass_activated")) {
+        this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.task_pass_activated", {
+          taskPassId: taskPass.id,
+          planId: deposit.taskPassPlanId,
+        });
+      }
+    }
+
+    if (!this.store.hasDepositProviderEvent(deposit.id, "deposit.lifecycle.deposit_bonus_locked")) {
+      const bonus = this.maybeCreateDepositBonus(deposit);
+      if (bonus) {
+        this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.deposit_bonus_locked", {
+          bonusId: bonus.id,
+          bonusTokens: bonus.bonusTokens,
+        });
+      }
+    }
+
+    await this.maybeUnlockDepositBonusesForUser(deposit.userId);
   }
 
   private maybeCreateDepositBonus(deposit: DepositOrder) {

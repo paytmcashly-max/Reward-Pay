@@ -300,4 +300,43 @@ describe("api flow", () => {
     expect(tokenLedger.body.filter((entry: { reason: string }) => entry.reason === "daily_checkin")).toHaveLength(1);
     expect(tokenLedger.body.filter((entry: { reason: string }) => entry.reason === "daily_task")).toHaveLength(1);
   });
+
+  it("auto-activates a Task Pass after a successful plan-linked payment sync", async () => {
+    const app = createTestApp({
+      TASK_PASS_ENABLED: "true",
+    });
+
+    await request(app).post("/auth/send-otp").send({ phone: "9000000088" });
+    const verify = await request(app)
+      .post("/auth/verify-otp")
+      .send({ phone: "9000000088", code: "123456", name: "Task Pass Buyer" });
+    const token = verify.body.accessToken as string;
+
+    const deposit = await request(app)
+      .post("/deposits")
+      .set("authorization", `Bearer ${token}`)
+      .send({ amount: 149, provider: "cashfree", taskPassPlanId: "pass_growth" });
+    expect(deposit.status).toBe(201);
+
+    const synced = await request(app)
+      .post(`/deposits/${deposit.body.id}/sync`)
+      .set("authorization", `Bearer ${token}`)
+      .send({});
+    expect(synced.status).toBe(200);
+    expect(synced.body.status).toBe("reward_credited");
+
+    const currentPass = await request(app).get("/task-pass/me").set("authorization", `Bearer ${token}`);
+    expect(currentPass.status).toBe(200);
+    expect(currentPass.body.taskPass.status).toBe("active");
+    expect(currentPass.body.plan.id).toBe("pass_growth");
+
+    const syncedAgain = await request(app)
+      .post(`/deposits/${deposit.body.id}/sync`)
+      .set("authorization", `Bearer ${token}`)
+      .send({});
+    expect(syncedAgain.status).toBe(200);
+
+    const passes = await request(app).get("/admin/task-passes").set("x-admin-id", "admin_super");
+    expect(passes.body.filter((pass: { userId: string; paymentReference?: string }) => pass.userId === verify.body.user.id && pass.paymentReference === deposit.body.id)).toHaveLength(1);
+  });
 });
