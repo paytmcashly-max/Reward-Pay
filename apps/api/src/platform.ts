@@ -362,6 +362,8 @@ export class PlatformEngine {
     this.mustUser(adminUserId, "admin");
     const taskPass = this.mustUserTaskPass(taskPassId);
     const nextTaskPass = this.activateTaskPassRecord(taskPass, adminUserId);
+    const plan = this.mustTaskPassPlan(nextTaskPass.planId);
+    this.assignDailyTasksForContext(nextTaskPass.userId, { taskPass: nextTaskPass, plan }, this.getTodayDate());
     this.audit(adminUserId, "task_pass.activate", "user_task_pass", taskPassId, {
       userId: taskPass.userId,
       planId: taskPass.planId,
@@ -540,30 +542,7 @@ export class PlatformEngine {
     this.assertTaskPassEnabled();
     this.mustUser(adminUserId, "admin");
     const context = this.requireActiveTaskPassContext(userId);
-    const assignableTasks = this.getAssignableTasksForPlan(context.plan);
-    const existingAssignments = this.store.findAssignmentsForUserDate(userId, date);
-    const nextAssignments: UserDailyTaskAssignment[] = [];
-
-    for (const task of assignableTasks.slice(0, context.plan.dailyTaskMin)) {
-      const duplicate = existingAssignments.find((assignment) => assignment.taskId === task.id);
-      if (duplicate) {
-        nextAssignments.push(duplicate);
-        continue;
-      }
-
-      const assignment: UserDailyTaskAssignment = {
-        id: id("assignment"),
-        userId,
-        taskPassId: context.taskPass.id,
-        taskId: task.id,
-        date,
-        status: "assigned",
-        rewardTokens: task.rewardTokens,
-        createdAt: now(),
-      };
-      this.store.userDailyTaskAssignments.set(assignment.id, assignment);
-      nextAssignments.push(assignment);
-    }
+    const nextAssignments = this.assignDailyTasksForContext(userId, context, date);
 
     this.audit(adminUserId, "daily_tasks.assign_user", "user", userId, {
       date,
@@ -1861,6 +1840,39 @@ export class PlatformEngine {
       .slice(0, plan.dailyTaskMax);
   }
 
+  private assignDailyTasksForContext(
+    userId: string,
+    context: { taskPass: UserTaskPass; plan: TaskPassPlan },
+    date = this.getTodayDate(),
+  ) {
+    const assignableTasks = this.getAssignableTasksForPlan(context.plan);
+    const existingAssignments = this.store.findAssignmentsForUserDate(userId, date);
+    const nextAssignments: UserDailyTaskAssignment[] = [];
+
+    for (const task of assignableTasks.slice(0, context.plan.dailyTaskMin)) {
+      const duplicate = existingAssignments.find((assignment) => assignment.taskId === task.id);
+      if (duplicate) {
+        nextAssignments.push(duplicate);
+        continue;
+      }
+
+      const assignment: UserDailyTaskAssignment = {
+        id: id("assignment"),
+        userId,
+        taskPassId: context.taskPass.id,
+        taskId: task.id,
+        date,
+        status: "assigned",
+        rewardTokens: task.rewardTokens,
+        createdAt: now(),
+      };
+      this.store.userDailyTaskAssignments.set(assignment.id, assignment);
+      nextAssignments.push(assignment);
+    }
+
+    return nextAssignments;
+  }
+
   private getTodayDate() {
     return now().slice(0, 10);
   }
@@ -2064,6 +2076,8 @@ export class PlatformEngine {
   private async ensureTaskPassDepositSideEffects(deposit: DepositOrder) {
     if (deposit.taskPassPlanId) {
       const taskPass = await this.ensureTaskPassFromDeposit(deposit);
+      const plan = this.mustTaskPassPlan(taskPass.planId);
+      this.assignDailyTasksForContext(deposit.userId, { taskPass, plan }, this.getTodayDate());
       if (!this.store.hasDepositProviderEvent(deposit.id, "deposit.lifecycle.task_pass_activated")) {
         this.store.addDepositProviderEvent(deposit.id, (deposit.provider as PaymentProvider) ?? "mock", "deposit.lifecycle.task_pass_activated", {
           taskPassId: taskPass.id,

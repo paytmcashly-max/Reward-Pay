@@ -330,11 +330,18 @@ describe("api flow", () => {
     expect(currentPass.body.taskPass.status).toBe("active");
     expect(currentPass.body.plan.id).toBe("pass_growth");
 
+    const tasks = await request(app).get("/daily/tasks").set("authorization", `Bearer ${token}`);
+    expect(tasks.status).toBe(200);
+    expect(tasks.body).toHaveLength(currentPass.body.plan.dailyTaskMin);
+
     const syncedAgain = await request(app)
       .post(`/deposits/${deposit.body.id}/sync`)
       .set("authorization", `Bearer ${token}`)
       .send({});
     expect(syncedAgain.status).toBe(200);
+
+    const tasksAfterSecondSync = await request(app).get("/daily/tasks").set("authorization", `Bearer ${token}`);
+    expect(tasksAfterSecondSync.body).toHaveLength(currentPass.body.plan.dailyTaskMin);
 
     const passes = await request(app).get("/admin/task-passes").set("x-admin-id", "admin_super");
     expect(passes.body.filter((pass: { userId: string; paymentReference?: string }) => pass.userId === verify.body.user.id && pass.paymentReference === deposit.body.id)).toHaveLength(1);
