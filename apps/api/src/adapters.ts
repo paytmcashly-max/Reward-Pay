@@ -57,7 +57,10 @@ const createCashfreeHeaders = (config: CashfreeConfig) => {
   };
 };
 
-const normalizeCashfreeBaseUrl = (baseUrl: string) => baseUrl.replace(/\/$/, "");
+const normalizeCashfreeBaseUrl = (baseUrl: string) => {
+  const normalized = baseUrl.replace(/\/$/, "");
+  return normalized.endsWith("/pg") ? normalized.slice(0, -3) : normalized;
+};
 
 export class CashfreePaymentProviderAdapter implements PaymentProviderAdapter {
   readonly provider = "cashfree" as const;
